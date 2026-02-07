@@ -2,14 +2,16 @@
 
 import { useState, useCallback } from 'react'
 import { useAccount } from 'wagmi'
+import Image from 'next/image'
 import type { Address } from 'viem'
 import { ENSInput } from './ENSInput'
 import { useYellow } from '@/hooks/useYellow'
-import { useENSName } from '@/hooks/useENS'
+import { useENSProfile } from '@/hooks/useENS'
+import { DEFAULT_ASSET_LABEL } from '@/lib/constants'
 
 export function PaymentForm() {
   const { address: walletAddress, isConnected: walletConnected } = useAccount()
-  const senderENS = useENSName(walletAddress)
+  const senderProfile = useENSProfile(walletAddress)
 
   const {
     isConnected,
@@ -118,7 +120,7 @@ export function PaymentForm() {
       <div className="flex justify-between items-start">
         <div>
           <p className="text-sm text-gray-400">Your Balance</p>
-          <p className="text-2xl font-bold text-white">{balance} USDC</p>
+          <p className="text-2xl font-bold text-white">{balance} {DEFAULT_ASSET_LABEL}</p>
         </div>
         <button
           onClick={disconnect}
@@ -128,12 +130,37 @@ export function PaymentForm() {
         </button>
       </div>
 
-      {/* Sender info */}
-      <div className="p-3 bg-gray-800 rounded-lg">
-        <p className="text-xs text-gray-500">Sending from</p>
-        <p className="text-sm text-white font-medium">
-          {senderENS || `${walletAddress?.slice(0, 6)}...${walletAddress?.slice(-4)}`}
-        </p>
+      {/* Sender info with ENS profile */}
+      <div className="flex items-center gap-3 p-3 bg-gray-800 rounded-lg">
+        {senderProfile.avatar ? (
+          <Image
+            src={senderProfile.avatar}
+            alt="Your ENS Avatar"
+            width={36}
+            height={36}
+            className="w-9 h-9 rounded-full ring-2 ring-gray-700"
+            unoptimized
+          />
+        ) : (
+          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-yellow-500 to-orange-600 flex items-center justify-center text-white text-xs font-bold">
+            {walletAddress?.slice(2, 4).toUpperCase()}
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-gray-500">Sending from</p>
+          {senderProfile.name ? (
+            <>
+              <p className="text-sm text-white font-medium truncate">{senderProfile.name}</p>
+              <p className="text-xs text-gray-500 font-mono truncate">
+                {walletAddress?.slice(0, 6)}...{walletAddress?.slice(-4)}
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-white font-medium font-mono">
+              {walletAddress?.slice(0, 6)}...{walletAddress?.slice(-4)}
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Recipient input */}
@@ -146,7 +173,7 @@ export function PaymentForm() {
       {/* Amount input */}
       <div className="space-y-2">
         <label className="block text-sm font-medium text-gray-300">
-          Amount (USDC)
+          Amount ({DEFAULT_ASSET_LABEL})
         </label>
         <div className="relative">
           <input
@@ -197,7 +224,7 @@ export function PaymentForm() {
       {txStatus === 'success' && (
         <div className="p-3 bg-green-900/20 border border-green-700 rounded-lg">
           <p className="text-sm text-green-400 text-center">
-            ✓ Payment sent successfully!
+            Payment sent successfully!
           </p>
         </div>
       )}
@@ -212,7 +239,7 @@ export function PaymentForm() {
 
       {/* Info text */}
       <p className="text-xs text-gray-500 text-center">
-        Powered by Yellow Network • No gas fees • Instant confirmation
+        Powered by Yellow Network &bull; No gas fees &bull; Instant confirmation
       </p>
     </div>
   )

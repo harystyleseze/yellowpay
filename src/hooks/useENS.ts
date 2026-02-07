@@ -1,65 +1,174 @@
-import { useEnsAddress, useEnsName, useEnsAvatar } from 'wagmi'
+import { useEnsAddress, useEnsName, useEnsAvatar, useEnsText } from 'wagmi'
 import { normalize } from 'viem/ens'
 import { mainnet } from 'wagmi/chains'
 import { isAddress } from 'viem'
 
-export function useENSResolve(input: string) {
-  // Check if input is already an address
-  const isEthAddress = isAddress(input)
+// Detect if input looks like an ENS or DNS name
+// Per ENS docs: any dot-separated string can resolve via ENS (not just .eth)
+// Examples: vitalik.eth, ensfairy.xyz, cb.id, alice.base.eth
+function isENSLike(input: string): boolean {
+  if (!input || isAddress(input)) return false
+  const trimmed = input.trim()
+  return trimmed.includes('.') && trimmed.length > 3
+}
 
-  // Normalize ENS name (only if not an address)
-  let normalizedName: string | undefined
+// Safely normalize an ENS/DNS name via ENSIP-15 (UTS-46)
+// Returns undefined if the input is not a valid name
+function tryNormalize(input: string): string | undefined {
+  if (!isENSLike(input)) return undefined
   try {
-    normalizedName = !isEthAddress && input ? normalize(input) : undefined
+    return normalize(input.trim())
   } catch {
-    // Invalid ENS name format
-    normalizedName = undefined
+    return undefined
   }
+}
 
-  // Resolve ENS name to address
+// Forward + reverse ENS resolution for recipient input
+// Supports .eth names, DNS names (e.g. name.xyz), and raw addresses
+// ENS resolution always uses Ethereum mainnet (chainId: 1) per ENS docs
+export function useENSResolve(input: string) {
+  const isEthAddress = isAddress(input)
+  const normalizedName = tryNormalize(input)
+
+  // Forward resolution: ENS/DNS name → address
   const {
     data: resolvedAddress,
     isLoading: isResolvingAddress,
-    error: addressError
+    error: addressError,
   } = useEnsAddress({
     name: normalizedName,
-    chainId: mainnet.id, // ENS resolution always from mainnet
-    query: {
-      enabled: !!normalizedName, // Only query if we have a valid name
-    }
+    chainId: mainnet.id,
+    query: { enabled: !!normalizedName },
   })
 
-  // Get avatar for the name
-  const { data: avatar } = useEnsAvatar({
+  // Avatar for forward-resolved name
+  const { data: forwardAvatar } = useEnsAvatar({
     name: normalizedName,
     chainId: mainnet.id,
-    query: {
-      enabled: !!normalizedName,
-    }
+    query: { enabled: !!normalizedName && !!resolvedAddress },
   })
 
-  // If input is an address, use it directly
-  const finalAddress = isEthAddress ? input as `0x${string}` : resolvedAddress
+  // Reverse resolution: raw address → primary ENS name
+  const { data: reverseName } = useEnsName({
+    address: isEthAddress ? (input as `0x${string}`) : undefined,
+    chainId: mainnet.id,
+    query: { enabled: isEthAddress },
+  })
+
+  // Normalize reverse-resolved name for avatar/text lookups
+  const reverseNormalized = reverseName ? tryNormalize(reverseName) : undefined
+
+  // Avatar for reverse-resolved name
+  const { data: reverseAvatar } = useEnsAvatar({
+    name: reverseNormalized,
+    chainId: mainnet.id,
+    query: { enabled: !!reverseNormalized },
+  })
+
+  const finalAddress = isEthAddress ? (input as `0x${string}`) : resolvedAddress
+  const displayName = isEthAddress ? reverseNormalized : normalizedName
+  const displayAvatar = isEthAddress ? reverseAvatar : forwardAvatar
 
   return {
-    address: finalAddress,
-    avatar,
-    isLoading: isResolvingAddress,
+    address: finalAddress ?? null,
+    name: displayName ?? null,
+    avatar: displayAvatar ?? null,
+    isLoading: !isEthAddress && isResolvingAddress,
     isValid: !!finalAddress,
-    isENS: !isEthAddress && !!resolvedAddress,
+    isENS: (!isEthAddress && !!resolvedAddress) || (isEthAddress && !!reverseName),
     error: addressError,
   }
 }
 
-// Reverse lookup: address to ENS name
+// Reverse lookup: address → primary ENS name
 export function useENSName(address: `0x${string}` | undefined) {
   const { data: ensName } = useEnsName({
     address,
     chainId: mainnet.id,
-    query: {
-      enabled: !!address,
-    }
+    query: { enabled: !!address },
+  })
+  return ensName ?? null
+}
+
+// Full ENS profile for a wallet address: reverse name, avatar, and text records
+// Used for displaying the connected user's identity
+export function useENSProfile(address: `0x${string}` | undefined) {
+  // Reverse: address → primary name
+  const { data: name } = useEnsName({
+    address,
+    chainId: mainnet.id,
+    query: { enabled: !!address },
   })
 
-  return ensName
+  const normalizedName = name ? tryNormalize(name) : undefined
+
+  // Avatar
+  const { data: avatar } = useEnsAvatar({
+    name: normalizedName,
+    chainId: mainnet.id,
+    query: { enabled: !!normalizedName },
+  })
+
+  // Text records
+  const { data: description } = useEnsText({
+    name: normalizedName,
+    key: 'description',
+    chainId: mainnet.id,
+    query: { enabled: !!normalizedName },
+  })
+
+  const { data: twitter } = useEnsText({
+    name: normalizedName,
+    key: 'com.twitter',
+    chainId: mainnet.id,
+    query: { enabled: !!normalizedName },
+  })
+
+  const { data: github } = useEnsText({
+    name: normalizedName,
+    key: 'com.github',
+    chainId: mainnet.id,
+    query: { enabled: !!normalizedName },
+  })
+
+  const { data: url } = useEnsText({
+    name: normalizedName,
+    key: 'url',
+    chainId: mainnet.id,
+    query: { enabled: !!normalizedName },
+  })
+
+  return {
+    name: name ?? null,
+    avatar: avatar ?? null,
+    description: description ?? null,
+    twitter: twitter ?? null,
+    github: github ?? null,
+    url: url ?? null,
+    hasProfile: !!(name || avatar),
+  }
+}
+
+// Text records for a resolved ENS name (used for recipient display)
+export function useENSTextRecords(name: string | null) {
+  const normalizedName = name ? tryNormalize(name) : undefined
+
+  const { data: description } = useEnsText({
+    name: normalizedName,
+    key: 'description',
+    chainId: mainnet.id,
+    query: { enabled: !!normalizedName },
+  })
+
+  const { data: twitter } = useEnsText({
+    name: normalizedName,
+    key: 'com.twitter',
+    chainId: mainnet.id,
+    query: { enabled: !!normalizedName },
+  })
+
+  return {
+    description: description ?? null,
+    twitter: twitter ?? null,
+  }
 }

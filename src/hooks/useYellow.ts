@@ -22,7 +22,7 @@ import {
   type EIP712AuthDomain,
 } from '@erc7824/nitrolite'
 
-import { YELLOW_WS_ENDPOINT } from '@/lib/constants'
+import { YELLOW_WS_ENDPOINT, DEFAULT_ASSET } from '@/lib/constants'
 
 // Session state interface
 interface YellowState {
@@ -272,7 +272,7 @@ export function useYellow() {
   const sendPayment = useCallback(async (
     recipientAddress: Address,
     amount: string,
-    asset: string = 'usdc'
+    asset: string = DEFAULT_ASSET
   ) => {
     if (!signerRef.current || !wsRef.current || !state.isAuthenticated) {
       throw new Error('Not connected or not authenticated')
@@ -322,14 +322,14 @@ export function useYellow() {
     }
   }, [state.isAuthenticated, sendMessage, fetchBalances])
 
-  // Get USDC balance - format to 2 decimal places
-  const getUSDCBalance = useCallback(() => {
-    const usdcBalance = state.balances.find(
-      b => b.asset.toLowerCase() === 'usdc'
+  // Get default asset balance - format to 2 decimal places
+  const getDefaultBalance = useCallback(() => {
+    const assetBalance = state.balances.find(
+      b => b.asset.toLowerCase() === DEFAULT_ASSET.toLowerCase()
     )
-    if (!usdcBalance?.amount) return '0.00'
+    if (!assetBalance?.amount) return '0.00'
 
-    const amount = parseFloat(usdcBalance.amount)
+    const amount = parseFloat(assetBalance.amount)
     return isNaN(amount) ? '0.00' : amount.toFixed(2)
   }, [state.balances])
 
@@ -372,11 +372,26 @@ export function useYellow() {
     }
   }, [fetchBalances])
 
+  // Heartbeat: prevent WebSocket idle timeout by periodically fetching balances
+  // Most WebSocket servers drop idle connections after 30-120s of inactivity.
+  // Sending a valid RPC call every 30s keeps the connection alive and data fresh.
+  useEffect(() => {
+    if (!state.isAuthenticated) return
+
+    const heartbeat = setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN && signerRef.current) {
+        fetchBalances()
+      }
+    }, 30_000)
+
+    return () => clearInterval(heartbeat)
+  }, [state.isAuthenticated, fetchBalances])
+
   return {
     // State
     isConnected: state.isConnected,
     isAuthenticated: state.isAuthenticated,
-    balance: getUSDCBalance(),
+    balance: getDefaultBalance(),
     error: state.error,
 
     // Loading states

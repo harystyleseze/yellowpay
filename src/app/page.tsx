@@ -23,7 +23,7 @@ export default function Home() {
             Instant Payments
           </h2>
           <p className="text-gray-400">
-            Send USDC instantly using ENS names. No gas fees.
+            Send payments instantly using ENS or DNS names. No gas fees.
           </p>
         </div>
 
