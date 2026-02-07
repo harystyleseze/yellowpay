@@ -87,3 +87,30 @@ export function getContractsForChain(chainId: number): { custody: `0x${string}`;
 
 // Ethereum mainnet chain ID (for ENS resolution)
 export const ETHEREUM_CHAIN_ID = 1
+
+// ─── Settlement Token Mapping ───
+// Maps Yellow Network asset names to on-chain tokens for LI.FI routing.
+// When paying with "any token", LI.FI swaps/bridges to this token on this chain,
+// then it gets deposited into Yellow Network custody.
+interface SettlementToken {
+  chainId: number
+  tokenAddress: string
+  decimals: number
+  symbol: string
+}
+
+export const SETTLEMENT_TOKENS: Record<string, SettlementToken> = {
+  usdc: { chainId: 8453, tokenAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', decimals: 6, symbol: 'USDC' },
+  usdt: { chainId: 137, tokenAddress: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F', decimals: 6, symbol: 'USDT' },
+  eth:  { chainId: 8453, tokenAddress: '0x0000000000000000000000000000000000000000', decimals: 18, symbol: 'ETH' },
+  weth: { chainId: 8453, tokenAddress: '0x4200000000000000000000000000000000000006', decimals: 18, symbol: 'WETH' },
+  bnb:  { chainId: 56, tokenAddress: '0x0000000000000000000000000000000000000000', decimals: 18, symbol: 'BNB' },
+  link: { chainId: 8453, tokenAddress: '0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196', decimals: 18, symbol: 'LINK' },
+}
+
+// Get the settlement token config for a Yellow Network asset
+export function getSettlementToken(asset: string): SettlementToken {
+  const token = SETTLEMENT_TOKENS[asset.toLowerCase()]
+  // Default to USDC on Base
+  return token || SETTLEMENT_TOKENS.usdc
+}

@@ -5,8 +5,9 @@ import { ConnectButton } from '@rainbow-me/rainbowkit'
 import { PaymentForm } from '@/components/PaymentForm'
 import { FundAccount } from '@/components/FundAccount'
 import { WithdrawForm } from '@/components/WithdrawForm'
+import { TxHistory } from '@/components/TxHistory'
 
-type Tab = 'pay' | 'fund' | 'withdraw'
+type Tab = 'pay' | 'fund' | 'withdraw' | 'history'
 
 const TAB_CONFIG: Record<Tab, { label: string; title: string; subtitle: string }> = {
   pay: {
@@ -23,6 +24,11 @@ const TAB_CONFIG: Record<Tab, { label: string; title: string; subtitle: string }
     label: 'Withdraw',
     title: 'Withdraw',
     subtitle: 'Withdraw funds from Yellow Network back to your wallet.',
+  },
+  history: {
+    label: 'History',
+    title: 'Transaction History',
+    subtitle: 'View your payments, deposits, and withdrawals.',
   },
 }
 
@@ -69,6 +75,7 @@ export default function Home() {
         {activeTab === 'pay' && <PaymentForm />}
         {activeTab === 'fund' && <FundAccount />}
         {activeTab === 'withdraw' && <WithdrawForm />}
+        {activeTab === 'history' && <TxHistory />}
       </div>
 
       {/* Footer */}
