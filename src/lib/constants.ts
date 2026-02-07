@@ -8,5 +8,5 @@ export const USDC_ARBITRUM = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831' as con
 // USDC decimals
 export const USDC_DECIMALS = 6
 
-// Yellow Network WebSocket endpoint
-export const YELLOW_WS_ENDPOINT = process.env.NEXT_PUBLIC_YELLOW_WS || 'wss://clearnet.yellow.com/ws'
+// Yellow Network WebSocket endpoint (Sandbox for testing)
+export const YELLOW_WS_ENDPOINT = process.env.NEXT_PUBLIC_YELLOW_WS || 'wss://clearnet-sandbox.yellow.com/ws'

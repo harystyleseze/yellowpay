@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useEffect } from 'react'
+import Image from 'next/image'
 import { useENSResolve } from '@/hooks/useENS'
 
 interface ENSInputProps {
@@ -45,10 +46,13 @@ export function ENSInput({ value, onChange, onResolve }: ENSInputProps) {
       {isValid && !isLoading && (
         <div className="flex items-center gap-3 p-3 bg-green-900/20 border border-green-700 rounded-lg">
           {avatar && (
-            <img
+            <Image
               src={avatar}
               alt="ENS Avatar"
+              width={32}
+              height={32}
               className="w-8 h-8 rounded-full"
+              unoptimized
             />
           )}
           <div>
