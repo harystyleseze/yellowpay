@@ -34,6 +34,17 @@ function avatarUrl(name: string | undefined | null): string | null {
   return `${ENS_AVATAR_BASE}/${name}`
 }
 
+// Classify ENS resolution errors for better user feedback
+// CCIP-Read failures (L2 gateway unreachable) are different from "name not found"
+function getErrorMessage(error: Error | null): string | null {
+  if (!error) return null
+  const msg = error.message || ''
+  if (msg.includes('HTTP request failed') || msg.includes('OffchainLookup') || msg.includes('fetch failed')) {
+    return 'Name resolution gateway unreachable. The L2 resolver may be temporarily unavailable — please try again.'
+  }
+  return 'Could not resolve this name. Check spelling and try again.'
+}
+
 // Forward + reverse ENS resolution for recipient input
 // Supports .eth names, DNS names (e.g. name.xyz), and raw addresses
 // ENS resolution always uses Ethereum mainnet (chainId: 1) per ENS docs
@@ -42,6 +53,8 @@ export function useENSResolve(input: string) {
   const normalizedName = tryNormalize(input)
 
   // Forward resolution: ENS/DNS name → address
+  // CCIP-Read (ERC-3668) is handled transparently by viem for L2 names
+  // like base.eth, cb.id, etc. Retries help with transient gateway failures.
   const {
     data: resolvedAddress,
     isLoading: isResolvingAddress,
@@ -49,7 +62,11 @@ export function useENSResolve(input: string) {
   } = useEnsAddress({
     name: normalizedName,
     chainId: mainnet.id,
-    query: { enabled: !!normalizedName },
+    query: {
+      enabled: !!normalizedName,
+      retry: 2,
+      retryDelay: 1000,
+    },
   })
 
   // Reverse resolution: raw address → primary ENS name
@@ -73,6 +90,7 @@ export function useENSResolve(input: string) {
     isValid: !!finalAddress,
     isENS: (!isEthAddress && !!resolvedAddress) || (isEthAddress && !!reverseName),
     error: addressError,
+    errorMessage: getErrorMessage(addressError),
   }
 }
 

@@ -6,7 +6,7 @@ import type { Address } from 'viem'
 import { ENSInput } from './ENSInput'
 import { useYellow } from '@/hooks/useYellow'
 import { useENSProfile } from '@/hooks/useENS'
-import { DEFAULT_ASSET_LABEL } from '@/lib/constants'
+import { DEFAULT_ASSET, getAssetLabel } from '@/lib/constants'
 
 export function PaymentForm() {
   const { address: walletAddress, isConnected: walletConnected } = useAccount()
@@ -22,6 +22,7 @@ export function PaymentForm() {
     isConnected,
     isAuthenticated,
     balance,
+    balances,
     error,
     isConnecting,
     isSending,
@@ -33,7 +34,18 @@ export function PaymentForm() {
   const [recipient, setRecipient] = useState('')
   const [resolvedRecipient, setResolvedRecipient] = useState<Address | null>(null)
   const [amount, setAmount] = useState('')
+  const [selectedAsset, setSelectedAsset] = useState(DEFAULT_ASSET)
   const [txStatus, setTxStatus] = useState<'idle' | 'success' | 'error'>('idle')
+
+  // Get balance for the currently selected asset
+  const selectedBalance = (() => {
+    const b = balances.find(
+      b => b.asset.toLowerCase() === selectedAsset.toLowerCase()
+    )
+    if (!b?.amount) return '0.00'
+    const num = parseFloat(b.amount)
+    return isNaN(num) ? '0.00' : num.toFixed(2)
+  })()
 
   // Handle connection to Yellow Network
   const handleConnect = async () => {
@@ -48,7 +60,7 @@ export function PaymentForm() {
     setTxStatus('idle')
 
     try {
-      await sendPayment(resolvedRecipient, amount)
+      await sendPayment(resolvedRecipient, amount, selectedAsset)
       setTxStatus('success')
       setAmount('')
       setRecipient('')
@@ -68,7 +80,7 @@ export function PaymentForm() {
   }, [])
 
   // Validate amount
-  const isValidAmount = amount && parseFloat(amount) > 0 && parseFloat(amount) <= parseFloat(balance)
+  const isValidAmount = amount && parseFloat(amount) > 0 && parseFloat(amount) <= parseFloat(selectedBalance)
 
   // Not wallet connected
   if (!walletConnected) {
@@ -118,14 +130,30 @@ export function PaymentForm() {
     )
   }
 
+  // Non-zero balances for display
+  const nonZeroBalances = balances.filter(b => parseFloat(b.amount) > 0)
+
   // Connected - show payment form
   return (
     <div className="p-6 bg-gray-900 rounded-xl border border-gray-800 space-y-6">
-      {/* Header with balance */}
+      {/* Header with balances */}
       <div className="flex justify-between items-start">
         <div>
-          <p className="text-sm text-gray-400">Your Balance</p>
-          <p className="text-2xl font-bold text-white">{balance} {DEFAULT_ASSET_LABEL}</p>
+          <p className="text-sm text-gray-400">Your Balances</p>
+          {nonZeroBalances.length > 0 ? (
+            <div className="space-y-0.5 mt-1">
+              {nonZeroBalances.map(b => (
+                <p key={b.asset} className="text-sm text-white">
+                  <span className="font-bold text-lg">
+                    {parseFloat(b.amount).toFixed(2)}
+                  </span>{' '}
+                  <span className="text-gray-400">{getAssetLabel(b.asset)}</span>
+                </p>
+              ))}
+            </div>
+          ) : (
+            <p className="text-2xl font-bold text-white">{balance} {getAssetLabel(DEFAULT_ASSET)}</p>
+          )}
         </div>
         <button
           onClick={disconnect}
@@ -176,11 +204,32 @@ export function PaymentForm() {
         onResolve={handleResolve}
       />
 
-      {/* Amount input */}
+      {/* Asset selector + Amount input */}
       <div className="space-y-2">
         <label className="block text-sm font-medium text-gray-300">
-          Amount ({DEFAULT_ASSET_LABEL})
+          Amount
         </label>
+
+        {/* Asset selector — show if multiple assets have balances */}
+        {nonZeroBalances.length > 1 && (
+          <select
+            value={selectedAsset}
+            onChange={(e) => {
+              setSelectedAsset(e.target.value)
+              setAmount('')
+            }}
+            className="w-full px-4 py-2.5 mb-2 bg-gray-800 border border-gray-700 rounded-lg
+                       text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500
+                       focus:border-transparent appearance-none cursor-pointer"
+          >
+            {nonZeroBalances.map(b => (
+              <option key={b.asset} value={b.asset}>
+                {getAssetLabel(b.asset)} — {parseFloat(b.amount).toFixed(2)} available
+              </option>
+            ))}
+          </select>
+        )}
+
         <div className="relative">
           <input
             type="number"
@@ -191,19 +240,21 @@ export function PaymentForm() {
             step="0.01"
             className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg
                        text-white placeholder-gray-500 focus:outline-none focus:ring-2
-                       focus:ring-blue-500 focus:border-transparent pr-16"
+                       focus:ring-blue-500 focus:border-transparent pr-24"
           />
-          <button
-            onClick={() => setAmount(balance)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-xs
-                       text-blue-400 hover:text-blue-300 font-medium"
-          >
-            MAX
-          </button>
+          <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
+            <span className="text-xs text-gray-500">{getAssetLabel(selectedAsset)}</span>
+            <button
+              onClick={() => setAmount(selectedBalance)}
+              className="text-xs text-blue-400 hover:text-blue-300 font-medium"
+            >
+              MAX
+            </button>
+          </div>
         </div>
 
         {/* Amount validation */}
-        {amount && parseFloat(amount) > parseFloat(balance) && (
+        {amount && parseFloat(amount) > parseFloat(selectedBalance) && (
           <p className="text-sm text-red-400">Insufficient balance</p>
         )}
       </div>
@@ -222,7 +273,7 @@ export function PaymentForm() {
             Sending...
           </>
         ) : (
-          'Send Instantly'
+          `Send ${getAssetLabel(selectedAsset)} Instantly`
         )}
       </button>
 

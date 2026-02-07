@@ -10,7 +10,7 @@ interface ENSInputProps {
 }
 
 export function ENSInput({ value, onChange, onResolve }: ENSInputProps) {
-  const { address, name, avatar, isLoading, isValid, isENS, error } = useENSResolve(value)
+  const { address, name, avatar, isLoading, isValid, isENS, error, errorMessage } = useENSResolve(value)
   const textRecords = useENSTextRecords(isENS ? name : null)
   const [avatarOk, setAvatarOk] = useState(false)
 
@@ -102,7 +102,7 @@ export function ENSInput({ value, onChange, onResolve }: ENSInputProps) {
       {/* Error state */}
       {error && !isLoading && isTyping && (
         <p className="text-sm text-red-400">
-          Could not resolve this name. Check spelling and try again.
+          {errorMessage}
         </p>
       )}
 

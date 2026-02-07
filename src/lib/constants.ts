@@ -64,5 +64,26 @@ export const PRODUCTION_ASSETS = {
 export const DEFAULT_ASSET = IS_SANDBOX ? SANDBOX_ASSET : 'usdc'
 export const DEFAULT_ASSET_LABEL = IS_SANDBOX ? 'ytest.usd' : 'USDC'
 
+// Get display label for any Yellow Network asset
+export function getAssetLabel(asset: string): string {
+  if (IS_SANDBOX) return asset // e.g. 'ytest.usd'
+  const entry = PRODUCTION_ASSETS[asset as keyof typeof PRODUCTION_ASSETS]
+  return entry?.label || asset.toUpperCase()
+}
+
+// Get custody/adjudicator contract addresses for a given chain ID
+export function getContractsForChain(chainId: number): { custody: `0x${string}`; adjudicator: `0x${string}` } {
+  if (IS_SANDBOX) {
+    return SANDBOX_CONTRACTS
+  }
+
+  // Production: Polygon (137) and Base (8453) use Set B, all others use Set A
+  const SET_B_CHAINS = [137, 8453]
+  if (SET_B_CHAINS.includes(chainId)) {
+    return PRODUCTION_CONTRACTS.SET_B
+  }
+  return PRODUCTION_CONTRACTS.SET_A
+}
+
 // Ethereum mainnet chain ID (for ENS resolution)
 export const ETHEREUM_CHAIN_ID = 1
