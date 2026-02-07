@@ -1,7 +1,12 @@
-import { useEnsAddress, useEnsName, useEnsAvatar, useEnsText } from 'wagmi'
+import { useEnsAddress, useEnsName, useEnsText } from 'wagmi'
 import { normalize } from 'viem/ens'
 import { mainnet } from 'wagmi/chains'
 import { isAddress } from 'viem'
+
+// ENS metadata service serves avatar images directly via HTTP.
+// Using this as <img src> avoids CORS issues that occur with wagmi's useEnsAvatar
+// (which uses fetch() internally to resolve NFT metadata, triggering CORS from euc.li).
+const ENS_AVATAR_BASE = 'https://metadata.ens.domains/mainnet/avatar'
 
 // Detect if input looks like an ENS or DNS name
 // Per ENS docs: any dot-separated string can resolve via ENS (not just .eth)
@@ -23,6 +28,12 @@ function tryNormalize(input: string): string | undefined {
   }
 }
 
+// Generate avatar URL from ENS name using the metadata service
+function avatarUrl(name: string | undefined | null): string | null {
+  if (!name) return null
+  return `${ENS_AVATAR_BASE}/${name}`
+}
+
 // Forward + reverse ENS resolution for recipient input
 // Supports .eth names, DNS names (e.g. name.xyz), and raw addresses
 // ENS resolution always uses Ethereum mainnet (chainId: 1) per ENS docs
@@ -41,13 +52,6 @@ export function useENSResolve(input: string) {
     query: { enabled: !!normalizedName },
   })
 
-  // Avatar for forward-resolved name
-  const { data: forwardAvatar } = useEnsAvatar({
-    name: normalizedName,
-    chainId: mainnet.id,
-    query: { enabled: !!normalizedName && !!resolvedAddress },
-  })
-
   // Reverse resolution: raw address → primary ENS name
   const { data: reverseName } = useEnsName({
     address: isEthAddress ? (input as `0x${string}`) : undefined,
@@ -55,24 +59,16 @@ export function useENSResolve(input: string) {
     query: { enabled: isEthAddress },
   })
 
-  // Normalize reverse-resolved name for avatar/text lookups
+  // Normalize reverse-resolved name for lookups
   const reverseNormalized = reverseName ? tryNormalize(reverseName) : undefined
-
-  // Avatar for reverse-resolved name
-  const { data: reverseAvatar } = useEnsAvatar({
-    name: reverseNormalized,
-    chainId: mainnet.id,
-    query: { enabled: !!reverseNormalized },
-  })
 
   const finalAddress = isEthAddress ? (input as `0x${string}`) : resolvedAddress
   const displayName = isEthAddress ? reverseNormalized : normalizedName
-  const displayAvatar = isEthAddress ? reverseAvatar : forwardAvatar
 
   return {
     address: finalAddress ?? null,
     name: displayName ?? null,
-    avatar: displayAvatar ?? null,
+    avatar: avatarUrl(displayName),
     isLoading: !isEthAddress && isResolvingAddress,
     isValid: !!finalAddress,
     isENS: (!isEthAddress && !!resolvedAddress) || (isEthAddress && !!reverseName),
@@ -101,13 +97,6 @@ export function useENSProfile(address: `0x${string}` | undefined) {
   })
 
   const normalizedName = name ? tryNormalize(name) : undefined
-
-  // Avatar
-  const { data: avatar } = useEnsAvatar({
-    name: normalizedName,
-    chainId: mainnet.id,
-    query: { enabled: !!normalizedName },
-  })
 
   // Text records
   const { data: description } = useEnsText({
@@ -140,12 +129,12 @@ export function useENSProfile(address: `0x${string}` | undefined) {
 
   return {
     name: name ?? null,
-    avatar: avatar ?? null,
+    avatar: avatarUrl(normalizedName),
     description: description ?? null,
     twitter: twitter ?? null,
     github: github ?? null,
     url: url ?? null,
-    hasProfile: !!(name || avatar),
+    hasProfile: !!name,
   }
 }
 

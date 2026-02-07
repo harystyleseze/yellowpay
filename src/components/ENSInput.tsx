@@ -1,7 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
-import Image from 'next/image'
+import { useEffect, useState } from 'react'
 import { useENSResolve, useENSTextRecords } from '@/hooks/useENS'
 
 interface ENSInputProps {
@@ -13,11 +12,17 @@ interface ENSInputProps {
 export function ENSInput({ value, onChange, onResolve }: ENSInputProps) {
   const { address, name, avatar, isLoading, isValid, isENS, error } = useENSResolve(value)
   const textRecords = useENSTextRecords(isENS ? name : null)
+  const [avatarOk, setAvatarOk] = useState(false)
 
   // Notify parent when address resolves
   useEffect(() => {
     onResolve(isValid ? address : null)
   }, [address, isValid, onResolve])
+
+  // Reset avatar state when avatar URL changes
+  useEffect(() => {
+    setAvatarOk(false)
+  }, [avatar])
 
   const isTyping = value.length > 0
 
@@ -48,20 +53,23 @@ export function ENSInput({ value, onChange, onResolve }: ENSInputProps) {
       {isValid && !isLoading && (
         <div className="p-3 bg-gray-800/80 border border-green-800/50 rounded-lg space-y-2">
           <div className="flex items-center gap-3">
-            {avatar ? (
-              <Image
-                src={avatar}
-                alt="ENS Avatar"
-                width={36}
-                height={36}
-                className="w-9 h-9 rounded-full ring-2 ring-green-700/50"
-                unoptimized
-              />
-            ) : (
-              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold">
+            <div className="relative w-9 h-9 flex-shrink-0">
+              {/* Gradient fallback - always rendered behind avatar */}
+              <div className="absolute inset-0 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold">
                 {(name || value)?.slice(0, 2).toUpperCase()}
               </div>
-            )}
+              {/* Avatar from ENS metadata service - overlays gradient when loaded */}
+              {avatar && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={avatar}
+                  alt=""
+                  className={`absolute inset-0 w-9 h-9 rounded-full object-cover ring-2 ring-green-700/50 transition-opacity ${avatarOk ? 'opacity-100' : 'opacity-0'}`}
+                  onLoad={() => setAvatarOk(true)}
+                  onError={() => setAvatarOk(false)}
+                />
+              )}
+            </div>
             <div className="min-w-0 flex-1">
               {name && (
                 <p className="text-sm text-green-400 font-medium truncate">{name}</p>

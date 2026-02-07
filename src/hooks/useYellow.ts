@@ -156,7 +156,9 @@ export function useYellow() {
       // https://docs.yellow.org/docs/protocol/off-chain/authentication/
       // Note: expires_at as Unix timestamp - using seconds (10-digit) as server JWT uses seconds
       const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 86400) // 24h from now in seconds
-      const allowances: { asset: string; amount: string }[] = [] // Empty = unrestricted
+      // Session key must explicitly list permitted assets and spending caps.
+      // Empty array = zero spending allowed (NOT unrestricted).
+      const allowances = [{ asset: DEFAULT_ASSET, amount: '1000000000' }]
       const scope = 'console'
 
       // Step 1: auth_request (public endpoint, no signature required)

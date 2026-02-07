@@ -1,8 +1,7 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useAccount } from 'wagmi'
-import Image from 'next/image'
 import type { Address } from 'viem'
 import { ENSInput } from './ENSInput'
 import { useYellow } from '@/hooks/useYellow'
@@ -12,6 +11,12 @@ import { DEFAULT_ASSET_LABEL } from '@/lib/constants'
 export function PaymentForm() {
   const { address: walletAddress, isConnected: walletConnected } = useAccount()
   const senderProfile = useENSProfile(walletAddress)
+  const [senderAvatarOk, setSenderAvatarOk] = useState(false)
+
+  // Reset avatar state when profile changes
+  useEffect(() => {
+    setSenderAvatarOk(false)
+  }, [senderProfile.avatar])
 
   const {
     isConnected,
@@ -132,20 +137,21 @@ export function PaymentForm() {
 
       {/* Sender info with ENS profile */}
       <div className="flex items-center gap-3 p-3 bg-gray-800 rounded-lg">
-        {senderProfile.avatar ? (
-          <Image
-            src={senderProfile.avatar}
-            alt="Your ENS Avatar"
-            width={36}
-            height={36}
-            className="w-9 h-9 rounded-full ring-2 ring-gray-700"
-            unoptimized
-          />
-        ) : (
-          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-yellow-500 to-orange-600 flex items-center justify-center text-white text-xs font-bold">
+        <div className="relative w-9 h-9 flex-shrink-0">
+          <div className="absolute inset-0 rounded-full bg-gradient-to-br from-yellow-500 to-orange-600 flex items-center justify-center text-white text-xs font-bold">
             {walletAddress?.slice(2, 4).toUpperCase()}
           </div>
-        )}
+          {senderProfile.avatar && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={senderProfile.avatar}
+              alt=""
+              className={`absolute inset-0 w-9 h-9 rounded-full object-cover ring-2 ring-gray-700 transition-opacity ${senderAvatarOk ? 'opacity-100' : 'opacity-0'}`}
+              onLoad={() => setSenderAvatarOk(true)}
+              onError={() => setSenderAvatarOk(false)}
+            />
+          )}
+        </div>
         <div className="min-w-0 flex-1">
           <p className="text-xs text-gray-500">Sending from</p>
           {senderProfile.name ? (
