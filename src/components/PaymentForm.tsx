@@ -8,7 +8,7 @@ import { ENSInput } from './ENSInput'
 import { useYellow } from '@/hooks/useYellow'
 import { useENSProfile } from '@/hooks/useENS'
 import { useLiFiQuote, useLiFiChains, useLiFiTokens, useTransactionStatus } from '@/hooks/useLiFi'
-import { DEFAULT_ASSET, IS_SANDBOX, getAssetLabel, getSettlementToken } from '@/lib/constants'
+import { DEFAULT_ASSET, getAssetLabel, getSettlementToken } from '@/lib/constants'
 import { addTx, updateTx } from '@/lib/txHistory'
 import type { LiFiToken } from '@/lib/lifi'
 
@@ -140,15 +140,13 @@ export function PaymentForm() {
 
     fetchQuote({
       fromChain: selectedChainId,
-      toChain: IS_SANDBOX ? selectedChainId : settlement.chainId,
+      toChain: settlement.chainId,
       fromToken: selectedToken.address,
-      toToken: IS_SANDBOX
-        ? (availableTokens.find(t => t.symbol === 'USDC')?.address || selectedToken.address)
-        : settlement.tokenAddress,
+      toToken: settlement.tokenAddress,
       fromAmount,
       fromAddress: walletAddress,
     })
-  }, [payMode, selectedToken, selectedChainId, walletAddress, debouncedSourceAmount, selectedAsset, clearQuote, fetchQuote, availableTokens])
+  }, [payMode, selectedToken, selectedChainId, walletAddress, debouncedSourceAmount, selectedAsset, clearQuote, fetchQuote])
 
   // Wallet mode execution state
   const [walletPayStep, setWalletPayStep] = useState<WalletPayStep>('idle')
@@ -242,37 +240,16 @@ export function PaymentForm() {
     walletTxIdRef.current = tx.id
 
     try {
-      if (IS_SANDBOX) {
-        // Sandbox: simulate the full 3-step flow
-        const mockHash = `0x${Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}`
-        setSwapTxHash(mockHash)
-        updateTx(tx.id, { txHash: mockHash })
-        setTimeout(() => setWalletPayStep('deposit'), 2000)
-        setTimeout(() => setWalletPayStep('transfer'), 4000)
-        setTimeout(async () => {
-          try {
-            await sendPayment(resolvedRecipient, deliveryAmount, selectedAsset)
-            setWalletPayStep('done')
-            updateTx(tx.id, { status: 'completed' })
-            fetchBalances()
-          } catch {
-            setWalletPayError('Payment transfer failed after deposit')
-            updateTx(tx.id, { status: 'failed' })
-            setWalletPayStep('idle')
-          }
-        }, 5000)
-      } else {
-        // Production Step 1: Execute LI.FI swap/bridge
-        const hash = await walletClient.sendTransaction({
-          to: quote.transactionRequest.to as `0x${string}`,
-          data: quote.transactionRequest.data as `0x${string}`,
-          value: BigInt(quote.transactionRequest.value || '0'),
-          gas: BigInt(quote.transactionRequest.gasLimit),
-        })
-        setSwapTxHash(hash)
-        updateTx(tx.id, { txHash: hash })
-        // Steps 2 & 3 trigger via effects when swapStatus changes
-      }
+      // Step 1: Execute LI.FI swap/bridge
+      const hash = await walletClient.sendTransaction({
+        to: quote.transactionRequest.to as `0x${string}`,
+        data: quote.transactionRequest.data as `0x${string}`,
+        value: BigInt(quote.transactionRequest.value || '0'),
+        gas: BigInt(quote.transactionRequest.gasLimit),
+      })
+      setSwapTxHash(hash)
+      updateTx(tx.id, { txHash: hash })
+      // Steps 2 & 3 trigger via effects when swapStatus changes
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Transaction failed'
       if (msg.includes('rejected') || msg.includes('denied')) {
@@ -290,7 +267,7 @@ export function PaymentForm() {
   // Effect: when LI.FI swap completes → deposit to Yellow Network
   useEffect(() => {
     if (swapStatus?.status !== 'DONE' || walletPayStep !== 'swap') return
-    if (!quote || !walletAddress || IS_SANDBOX) return
+    if (!quote || !walletAddress) return
 
     const doDeposit = async () => {
       setWalletPayStep('deposit')
@@ -319,7 +296,7 @@ export function PaymentForm() {
 
   // Effect: when deposit completes → send payment to recipient
   useEffect(() => {
-    if (walletPayStep !== 'transfer' || IS_SANDBOX) return
+    if (walletPayStep !== 'transfer') return
     if (!resolvedRecipient || !deliveryAmount) return
 
     const doTransfer = async () => {
@@ -463,7 +440,7 @@ export function PaymentForm() {
         )}
 
         <p className="text-xs text-gray-500 text-center">
-          {IS_SANDBOX ? 'Sandbox mode — simulated transfer' : `TX: ${swapTxHash.slice(0, 10)}...${swapTxHash.slice(-8)}`}
+          {`TX: ${swapTxHash.slice(0, 10)}...${swapTxHash.slice(-8)}`}
         </p>
       </div>
     )
@@ -648,15 +625,9 @@ export function PaymentForm() {
                          text-white text-sm focus:outline-none focus:ring-2 focus:ring-yellow-500
                          focus:border-transparent appearance-none cursor-pointer"
             >
-              {IS_SANDBOX ? (
-                <option value={DEFAULT_ASSET}>{getAssetLabel(DEFAULT_ASSET)}</option>
-              ) : (
-                <>
-                  <option value="usdc">USDC</option>
-                  <option value="usdt">USDT</option>
-                  <option value="eth">ETH</option>
-                </>
-              )}
+              <option value="usdc">USDC</option>
+              <option value="usdt">USDT</option>
+              <option value="eth">ETH</option>
             </select>
           </div>
 
