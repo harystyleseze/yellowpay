@@ -7,6 +7,7 @@ import { useLiFiQuote, useLiFiChains, useLiFiTokens, useTransactionStatus } from
 import { useYellow } from '@/hooks/useYellow'
 import { DEFAULT_ASSET_LABEL } from '@/lib/constants'
 import { addTx, updateTx } from '@/lib/txHistory'
+import { UnsupportedChainBanner } from './UnsupportedChainBanner'
 import type { LiFiToken } from '@/lib/lifi'
 import type { Address } from 'viem'
 
@@ -359,14 +360,7 @@ export function FundAccount() {
 
       {/* Unsupported chain warning */}
       {tokensError && (
-        <div className="p-3 bg-yellow-900/20 border border-yellow-700/50 rounded-lg">
-          <p className="text-sm text-yellow-400">{tokensError}</p>
-          {currentChain && !supportedChainIds.has(currentChain.id) && chains.length > 0 && (
-            <p className="text-xs text-yellow-500 mt-1">
-              Your wallet is on {currentChain.name} (testnet). Select a supported chain above.
-            </p>
-          )}
-        </div>
+        <UnsupportedChainBanner message={tokensError} supportedChainIds={supportedChainIds} />
       )}
 
       {/* Token selector */}

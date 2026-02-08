@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useCallback, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { ConnectButton } from '@rainbow-me/rainbowkit'
 import { PaymentForm } from '@/components/PaymentForm'
 import { FundAccount } from '@/components/FundAccount'
@@ -38,8 +39,33 @@ const TAB_CONFIG: Record<Tab, { label: string; title: string; subtitle: string }
   },
 }
 
-export default function Home() {
-  const [activeTab, setActiveTab] = useState<Tab>('pay')
+export interface PaymentPrefill {
+  to?: string
+  amount?: string
+  asset?: string
+}
+
+function HomeContent() {
+  const searchParams = useSearchParams()
+
+  const toParam = searchParams.get('to')
+  const amountParam = searchParams.get('amount')
+  const assetParam = searchParams.get('asset')
+
+  const hasPrefill = !!toParam
+
+  const [activeTab, setActiveTab] = useState<Tab>(hasPrefill ? 'pay' : 'pay')
+  const [prefill, setPrefill] = useState<PaymentPrefill | null>(
+    hasPrefill
+      ? { to: toParam, amount: amountParam || undefined, asset: assetParam || undefined }
+      : null,
+  )
+
+  const handlePrefillConsumed = useCallback(() => {
+    setPrefill(null)
+    window.history.replaceState({}, '', window.location.pathname)
+  }, [])
+
   const { title, subtitle } = TAB_CONFIG[activeTab]
 
   return (
@@ -78,7 +104,9 @@ export default function Home() {
           ))}
         </div>
 
-        {activeTab === 'pay' && <PaymentForm />}
+        {activeTab === 'pay' && (
+          <PaymentForm prefill={prefill} onPrefillConsumed={handlePrefillConsumed} />
+        )}
         {activeTab === 'fund' && <FundAccount />}
         {activeTab === 'withdraw' && <WithdrawForm />}
         {activeTab === 'earn' && <EarnDashboard />}
@@ -94,5 +122,13 @@ export default function Home() {
         </div>
       </footer>
     </main>
+  )
+}
+
+export default function Home() {
+  return (
+    <Suspense>
+      <HomeContent />
+    </Suspense>
   )
 }

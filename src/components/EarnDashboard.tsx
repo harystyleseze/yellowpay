@@ -8,6 +8,7 @@ import { useLiFiQuote, useLiFiChains, useLiFiTokens, useTransactionStatus } from
 import { getAssetLabel, DEFAULT_ASSET_LABEL } from '@/lib/constants'
 import { addTx, updateTx } from '@/lib/txHistory'
 import type { EarnVault, EarnPosition } from '@/lib/earn'
+import { UnsupportedChainBanner } from './UnsupportedChainBanner'
 import type { LiFiToken } from '@/lib/lifi'
 
 // Debounce hook (same as FundAccount)
@@ -69,7 +70,7 @@ export function EarnDashboard() {
     () => selectedChainId ? [selectedChainId] : [],
     [selectedChainId]
   )
-  const { tokens: tokenMap, isLoading: tokensLoading } = useLiFiTokens(chainIds, supportedChainIds)
+  const { tokens: tokenMap, isLoading: tokensLoading, error: tokensError } = useLiFiTokens(chainIds, supportedChainIds)
   const availableTokens = useMemo(
     () => selectedChainId ? (tokenMap[selectedChainId] || []) : [],
     [selectedChainId, tokenMap]
@@ -544,6 +545,11 @@ export function EarnDashboard() {
                 )}
               </select>
             </div>
+
+            {/* Unsupported chain warning */}
+            {tokensError && (
+              <UnsupportedChainBanner message={tokensError} supportedChainIds={supportedChainIds} />
+            )}
 
             {/* Token selector */}
             <div className="space-y-2">
