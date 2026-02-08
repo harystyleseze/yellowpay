@@ -9,12 +9,16 @@ const TYPE_LABELS: Record<TxType, string> = {
   payment: 'Payment',
   fund: 'Deposit',
   withdraw: 'Withdrawal',
+  earn_deposit: 'Earn Deposit',
+  earn_withdraw: 'Earn Withdraw',
 }
 
 const TYPE_COLORS: Record<TxType, string> = {
   payment: 'text-blue-400 bg-blue-900/20 border-blue-800/50',
   fund: 'text-yellow-400 bg-yellow-900/20 border-yellow-800/50',
   withdraw: 'text-purple-400 bg-purple-900/20 border-purple-800/50',
+  earn_deposit: 'text-emerald-400 bg-emerald-900/20 border-emerald-800/50',
+  earn_withdraw: 'text-teal-400 bg-teal-900/20 border-teal-800/50',
 }
 
 const STATUS_DOT: Record<string, string> = {
@@ -56,7 +60,7 @@ export function TxHistory() {
       {/* Filter tabs + clear */}
       <div className="flex items-center justify-between">
         <div className="flex gap-1.5">
-          {(['all', 'payment', 'fund', 'withdraw'] as FilterType[]).map(f => (
+          {(['all', 'payment', 'fund', 'withdraw', 'earn_deposit', 'earn_withdraw'] as FilterType[]).map(f => (
             <button
               key={f}
               onClick={() => setFilter(f)}
@@ -129,6 +133,8 @@ function TxRow({ record }: { record: TxRecord }) {
               <span>{record.recipient}</span>
             ) : record.type === 'fund' && record.sourceToken ? (
               <span>{record.sourceAmount} {record.sourceToken} → {record.amount} {assetLabel}</span>
+            ) : (record.type === 'earn_deposit' || record.type === 'earn_withdraw') && record.vaultName ? (
+              <span>{record.amount} {assetLabel} &bull; {record.vaultName}</span>
             ) : (
               <span>{record.amount} {assetLabel}</span>
             )}
@@ -136,6 +142,11 @@ function TxRow({ record }: { record: TxRecord }) {
           {record.type === 'payment' && record.recipient && (
             <p className="text-xs text-gray-500 truncate">
               {record.amount} {assetLabel}
+            </p>
+          )}
+          {record.type === 'earn_withdraw' && record.yieldEarned && (
+            <p className="text-xs text-emerald-500 truncate">
+              +{record.yieldEarned} {assetLabel} yield
             </p>
           )}
         </div>
@@ -164,6 +175,12 @@ function TxRow({ record }: { record: TxRecord }) {
           )}
           {record.channelId && (
             <Detail label="Channel" value={truncateAddr(record.channelId)} />
+          )}
+          {record.vaultName && (
+            <Detail label="Vault" value={record.vaultName} />
+          )}
+          {record.yieldEarned && (
+            <Detail label="Yield earned" value={`+${record.yieldEarned}`} />
           )}
           <Detail label="Time" value={new Date(record.timestamp).toLocaleString()} />
         </div>

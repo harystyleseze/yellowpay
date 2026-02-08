@@ -6,8 +6,9 @@ import { PaymentForm } from '@/components/PaymentForm'
 import { FundAccount } from '@/components/FundAccount'
 import { WithdrawForm } from '@/components/WithdrawForm'
 import { TxHistory } from '@/components/TxHistory'
+import { EarnDashboard } from '@/components/EarnDashboard'
 
-type Tab = 'pay' | 'fund' | 'withdraw' | 'history'
+type Tab = 'pay' | 'fund' | 'withdraw' | 'earn' | 'history'
 
 const TAB_CONFIG: Record<Tab, { label: string; title: string; subtitle: string }> = {
   pay: {
@@ -24,6 +25,11 @@ const TAB_CONFIG: Record<Tab, { label: string; title: string; subtitle: string }
     label: 'Withdraw',
     title: 'Withdraw',
     subtitle: 'Withdraw funds from Yellow Network back to your wallet.',
+  },
+  earn: {
+    label: 'Earn',
+    title: 'Earn Yield',
+    subtitle: 'Put your balance to work. Earn passive yield on your assets.',
   },
   history: {
     label: 'History',
@@ -75,6 +81,7 @@ export default function Home() {
         {activeTab === 'pay' && <PaymentForm />}
         {activeTab === 'fund' && <FundAccount />}
         {activeTab === 'withdraw' && <WithdrawForm />}
+        {activeTab === 'earn' && <EarnDashboard />}
         {activeTab === 'history' && <TxHistory />}
       </div>
 

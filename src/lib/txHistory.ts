@@ -1,6 +1,6 @@
 // Transaction history — localStorage persistence layer
 
-export type TxType = 'payment' | 'fund' | 'withdraw'
+export type TxType = 'payment' | 'fund' | 'withdraw' | 'earn_deposit' | 'earn_withdraw'
 export type TxStatus = 'pending' | 'completed' | 'failed'
 
 export interface TxRecord {
@@ -21,6 +21,10 @@ export interface TxRecord {
   txHash?: string // on-chain transaction hash
   // Withdraw fields
   channelId?: string
+  // Earn fields
+  vaultId?: string
+  vaultName?: string
+  yieldEarned?: string
 }
 
 const STORAGE_KEY = 'yellowpay_tx_history'

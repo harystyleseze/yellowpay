@@ -1,4 +1,4 @@
-// Real LI.FI REST API client — used in production (IS_SANDBOX = false)
+// LI.FI REST API client (li.quest/v1)
 
 import type {
   LiFiService,

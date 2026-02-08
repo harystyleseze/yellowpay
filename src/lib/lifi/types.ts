@@ -1,4 +1,4 @@
-// LI.FI service types — used by both real client and mock client
+// LI.FI service types
 
 export interface LiFiToken {
   address: string
@@ -119,7 +119,7 @@ export interface LiFiError {
   errors?: LiFiToolError[]
 }
 
-// The service interface — both real and mock clients implement this
+// The service interface
 export interface LiFiService {
   getQuote(params: LiFiQuoteRequest): Promise<LiFiQuote>
   getChains(): Promise<LiFiChain[]>

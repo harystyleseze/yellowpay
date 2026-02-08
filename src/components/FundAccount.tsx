@@ -5,7 +5,7 @@ import { useAccount, useWalletClient, useBalance } from 'wagmi'
 import { parseUnits, formatUnits } from 'viem'
 import { useLiFiQuote, useLiFiChains, useLiFiTokens, useTransactionStatus } from '@/hooks/useLiFi'
 import { useYellow } from '@/hooks/useYellow'
-import { IS_SANDBOX, DEFAULT_ASSET_LABEL } from '@/lib/constants'
+import { DEFAULT_ASSET_LABEL } from '@/lib/constants'
 import { addTx, updateTx } from '@/lib/txHistory'
 import type { LiFiToken } from '@/lib/lifi'
 import type { Address } from 'viem'
@@ -104,12 +104,9 @@ export function FundAccount() {
 
     const fromAmount = parseUnits(debouncedAmount, selectedToken.decimals).toString()
 
-    // For sandbox: use same chain (simulated swap)
-    // For production: find the best settlement chain (e.g., Base for USDC)
-    const toChain = IS_SANDBOX ? selectedChainId : 8453 // Base as default settlement
-    const toToken = IS_SANDBOX
-      ? (availableTokens.find(t => t.symbol === 'USDC')?.address || selectedToken.address)
-      : '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' // USDC on Base
+    // Route to Base USDC for Yellow Network settlement
+    const toChain = 8453
+    const toToken = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' // USDC on Base
 
     fetchQuote({
       fromChain: selectedChainId,
@@ -119,7 +116,7 @@ export function FundAccount() {
       fromAmount,
       fromAddress: address,
     })
-  }, [selectedToken, selectedChainId, address, debouncedAmount, clearQuote, fetchQuote, availableTokens])
+  }, [selectedToken, selectedChainId, address, debouncedAmount, clearQuote, fetchQuote])
 
   // Transaction execution state
   const [txHash, setTxHash] = useState<string | null>(null)
@@ -162,30 +159,16 @@ export function FundAccount() {
     fundTxIdRef.current = tx.id
 
     try {
-      if (IS_SANDBOX) {
-        // Sandbox: simulate both steps
-        const mockHash = `0x${Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}`
-        setTxHash(mockHash)
-        updateTx(tx.id, { txHash: mockHash })
-        // Simulate deposit step after a short delay
-        setTimeout(() => setFundStep('deposit'), 2000)
-        setTimeout(() => {
-          setFundStep('done')
-          updateTx(tx.id, { status: 'completed' })
-          fetchBalances()
-        }, 4000)
-      } else {
-        // Production Step 1: Execute LI.FI swap/bridge
-        const hash = await walletClient.sendTransaction({
-          to: quote.transactionRequest.to as `0x${string}`,
-          data: quote.transactionRequest.data as `0x${string}`,
-          value: BigInt(quote.transactionRequest.value || '0'),
-          gas: BigInt(quote.transactionRequest.gasLimit),
-        })
-        setTxHash(hash)
-        updateTx(tx.id, { txHash: hash })
-        // Step 2 triggers when txStatus becomes 'DONE' (see effect below)
-      }
+      // Step 1: Execute LI.FI swap/bridge
+      const hash = await walletClient.sendTransaction({
+        to: quote.transactionRequest.to as `0x${string}`,
+        data: quote.transactionRequest.data as `0x${string}`,
+        value: BigInt(quote.transactionRequest.value || '0'),
+        gas: BigInt(quote.transactionRequest.gasLimit),
+      })
+      setTxHash(hash)
+      updateTx(tx.id, { txHash: hash })
+      // Step 2 triggers when txStatus becomes 'DONE' (see effect below)
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Transaction failed'
       if (msg.includes('rejected') || msg.includes('denied')) {
@@ -203,7 +186,7 @@ export function FundAccount() {
   // When LI.FI transfer completes → deposit into Yellow Network custody
   useEffect(() => {
     if (txStatus?.status !== 'DONE' || fundStep !== 'swap') return
-    if (!quote || !address || IS_SANDBOX) return
+    if (!quote || !address) return
 
     const doDeposit = async () => {
       setFundStep('deposit')
@@ -328,7 +311,7 @@ export function FundAccount() {
         )}
 
         <p className="text-xs text-gray-500 text-center">
-          {IS_SANDBOX ? 'Sandbox mode — simulated transfer' : `TX: ${txHash.slice(0, 10)}...${txHash.slice(-8)}`}
+          {`TX: ${txHash.slice(0, 10)}...${txHash.slice(-8)}`}
         </p>
       </div>
     )
@@ -391,32 +374,30 @@ export function FundAccount() {
         <label className="block text-sm font-medium text-gray-300">
           Token
         </label>
-        <div className="flex gap-2">
-          <select
-            value={selectedToken?.address ?? ''}
-            onChange={(e) => {
-              const token = availableTokens.find(t => t.address === e.target.value)
-              setSelectedToken(token || null)
-              setAmount('')
-            }}
-            disabled={tokensLoading || availableTokens.length === 0}
-            className="flex-1 px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg
-                       text-white focus:outline-none focus:ring-2 focus:ring-yellow-500
-                       focus:border-transparent appearance-none cursor-pointer"
-          >
-            {tokensLoading ? (
-              <option>Loading tokens...</option>
-            ) : availableTokens.length === 0 ? (
-              <option>No tokens available</option>
-            ) : (
-              availableTokens.map(token => (
-                <option key={token.address} value={token.address}>
-                  {token.symbol} — {token.name}
-                </option>
-              ))
-            )}
-          </select>
-        </div>
+        <select
+          value={selectedToken?.address ?? ''}
+          onChange={(e) => {
+            const token = availableTokens.find(t => t.address === e.target.value)
+            setSelectedToken(token || null)
+            setAmount('')
+          }}
+          disabled={tokensLoading || availableTokens.length === 0}
+          className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg
+                     text-white focus:outline-none focus:ring-2 focus:ring-yellow-500
+                     focus:border-transparent appearance-none cursor-pointer"
+        >
+          {tokensLoading ? (
+            <option>Loading tokens...</option>
+          ) : availableTokens.length === 0 ? (
+            <option>No tokens available</option>
+          ) : (
+            availableTokens.map(token => (
+              <option key={token.address} value={token.address}>
+                {token.symbol} — {token.name}
+              </option>
+            ))
+          )}
+        </select>
         {selectedToken && (
           <p className="text-xs text-gray-500">
             Wallet: {formattedWalletBalance} {selectedToken.symbol}
@@ -548,9 +529,7 @@ export function FundAccount() {
 
       {/* Info */}
       <p className="text-xs text-gray-500 text-center">
-        {IS_SANDBOX
-          ? 'Sandbox mode — transfers are simulated'
-          : 'Powered by LI.FI — best rates across 30+ bridges & DEXs'}
+        Powered by LI.FI — best rates across 30+ bridges & DEXs
       </p>
     </div>
   )
