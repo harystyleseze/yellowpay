@@ -2,8 +2,6 @@
 
 Instant gasless payments from any chain, with built-in cross-chain yield on Aave V3.
 
-Built for [ETHGlobal HackMoney 2026](https://ethglobal.com/events/hackmoney2026).
-
 ## What It Does
 
 YellowPay is a multi-chain payment and yield platform powered by Yellow Network state channels.
@@ -126,14 +124,6 @@ src/
         ├── types.ts          Earn TypeScript interfaces
         └── index.ts          Earn service export
 ```
-
-## Prize Tracks
-
-| Track | Pool | Focus |
-|-------|------|-------|
-| Yellow Network | $15,000 (1st: $5,000) | Full Nitrolite SDK lifecycle — auth, channels, transfers, deposits |
-| ENS Creative | $1,500 | CCIP-Read, avatars, text records, identity-first payment UX |
-| LI.FI DeFi Integration | $1,500–$2,500 | Cross-chain payments, funding, and Earn deposits |
 
 ## License
 
