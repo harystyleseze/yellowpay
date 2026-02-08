@@ -9,26 +9,39 @@ import {
   createAuthVerifyMessage,
   createGetLedgerBalancesMessage,
   createTransferMessage,
+  createGetChannelsMessage,
+  createResizeChannelMessage,
+  createCloseChannelMessage,
+  createCreateChannelMessage,
   createEIP712AuthMessageSigner,
   createECDSAMessageSigner,
   parseAuthChallengeResponse,
   parseAuthVerifyResponse,
   parseGetLedgerBalancesResponse,
   parseTransferResponse,
+  parseGetChannelsResponse,
+  parseResizeChannelResponse,
+  parseCloseChannelResponse,
+  parseCreateChannelResponse,
   parseAnyRPCResponse,
+  NitroliteClient,
+  WalletStateSigner,
   type MessageSigner,
   type RPCBalance,
+  type RPCChannelUpdateWithWallet,
   type PartialEIP712AuthMessage,
   type EIP712AuthDomain,
 } from '@erc7824/nitrolite'
+import { usePublicClient } from 'wagmi'
 
-import { YELLOW_WS_ENDPOINT } from '@/lib/constants'
+import { YELLOW_WS_ENDPOINT, DEFAULT_ASSET, getContractsForChain } from '@/lib/constants'
 
 // Session state interface
 interface YellowState {
   isConnected: boolean
   isAuthenticated: boolean
   balances: RPCBalance[]
+  channels: RPCChannelUpdateWithWallet[]
   error: string | null
 }
 
@@ -37,6 +50,7 @@ const initialState: YellowState = {
   isConnected: false,
   isAuthenticated: false,
   balances: [],
+  channels: [],
   error: null,
 }
 
@@ -46,6 +60,7 @@ const APPLICATION_NAME = 'yellowpay'
 export function useYellow() {
   const { address } = useAccount()
   const { data: walletClient } = useWalletClient()
+  const publicClient = usePublicClient()
 
   const [state, setState] = useState<YellowState>(initialState)
   const [isConnecting, setIsConnecting] = useState(false)
@@ -156,7 +171,9 @@ export function useYellow() {
       // https://docs.yellow.org/docs/protocol/off-chain/authentication/
       // Note: expires_at as Unix timestamp - using seconds (10-digit) as server JWT uses seconds
       const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 86400) // 24h from now in seconds
-      const allowances: { asset: string; amount: string }[] = [] // Empty = unrestricted
+      // Session key must explicitly list permitted assets and spending caps.
+      // Empty array = zero spending allowed (NOT unrestricted).
+      const allowances = [{ asset: DEFAULT_ASSET, amount: '1000000000' }]
       const scope = 'console'
 
       // Step 1: auth_request (public endpoint, no signature required)
@@ -220,8 +237,8 @@ export function useYellow() {
 
         setState(prev => ({ ...prev, isAuthenticated: true }))
 
-        // Fetch initial balances
-        await fetchBalances()
+        // Fetch initial balances and channels
+        await Promise.all([fetchBalances(), fetchChannels()])
       } else {
         throw new Error('Authentication failed - verification unsuccessful')
       }
@@ -268,11 +285,151 @@ export function useYellow() {
     }
   }, [sendMessage])
 
+  // Fetch channels
+  const fetchChannels = useCallback(async () => {
+    if (!signerRef.current || !wsRef.current) return
+
+    try {
+      const channelsMsg = await createGetChannelsMessage(signerRef.current, address)
+      const response = await sendMessage(channelsMsg)
+      const channelsResponse = parseGetChannelsResponse(response)
+
+      setState(prev => ({
+        ...prev,
+        channels: channelsResponse.params?.channels || [],
+      }))
+    } catch (error) {
+      console.error('Failed to fetch channels:', error)
+    }
+  }, [sendMessage, address])
+
+  // Withdraw from a channel
+  // If amount covers the full channel balance, close the channel.
+  // Otherwise, resize (partial withdraw).
+  const withdrawFromChannel = useCallback(async (
+    channelId: `0x${string}`,
+    fundsDestination: Address,
+    amount?: bigint, // undefined = full withdrawal (close)
+  ) => {
+    if (!signerRef.current || !wsRef.current || !state.isAuthenticated) {
+      throw new Error('Not connected or not authenticated')
+    }
+
+    setState(prev => ({ ...prev, error: null }))
+
+    try {
+      let response: string
+
+      if (amount !== undefined) {
+        // Partial withdraw via resize
+        const resizeMsg = await createResizeChannelMessage(signerRef.current, {
+          channel_id: channelId,
+          resize_amount: amount,
+          funds_destination: fundsDestination,
+        })
+        response = await sendMessage(resizeMsg)
+
+        const parsed = parseAnyRPCResponse(response)
+        if (parsed.method === 'error') {
+          const errorParams = parsed.params as { error?: string }
+          throw new Error(errorParams.error || 'Resize failed')
+        }
+        parseResizeChannelResponse(response)
+      } else {
+        // Full withdraw via close
+        const closeMsg = await createCloseChannelMessage(
+          signerRef.current,
+          channelId,
+          fundsDestination,
+        )
+        response = await sendMessage(closeMsg)
+
+        const parsed = parseAnyRPCResponse(response)
+        if (parsed.method === 'error') {
+          const errorParams = parsed.params as { error?: string }
+          throw new Error(errorParams.error || 'Channel close failed')
+        }
+        parseCloseChannelResponse(response)
+      }
+
+      // Refresh balances and channels
+      await Promise.all([fetchBalances(), fetchChannels()])
+    } catch (error) {
+      const technicalMessage = error instanceof Error ? error.message : 'Withdrawal failed'
+      console.error('Withdrawal error:', technicalMessage)
+      setState(prev => ({ ...prev, error: technicalMessage }))
+      throw error
+    }
+  }, [state.isAuthenticated, sendMessage, fetchBalances, fetchChannels])
+
+  // Deposit on-chain tokens into Yellow Network
+  // Step 1: Request channel creation via WebSocket RPC
+  // Step 2: Use NitroliteClient to approve + deposit into custody contract
+  const depositToYellow = useCallback(async (
+    tokenAddress: Address,
+    amount: bigint,
+    chainId: number,
+  ) => {
+    if (!signerRef.current || !wsRef.current || !state.isAuthenticated) {
+      throw new Error('Not connected or not authenticated')
+    }
+    if (!walletClient || !publicClient) {
+      throw new Error('Wallet not connected')
+    }
+
+    setState(prev => ({ ...prev, error: null }))
+
+    try {
+      // Step 1: Request channel creation via WS (tells the server we want a channel)
+      const createMsg = await createCreateChannelMessage(signerRef.current, {
+        chain_id: chainId,
+        token: tokenAddress,
+      })
+
+      const response = await sendMessage(createMsg)
+      const parsed = parseAnyRPCResponse(response)
+
+      if (parsed.method === 'error') {
+        const errorParams = parsed.params as { error?: string }
+        throw new Error(errorParams.error || 'Channel creation failed')
+      }
+
+      const channelResponse = parseCreateChannelResponse(response)
+
+      // Step 2: Deposit on-chain using NitroliteClient
+      const contracts = getContractsForChain(chainId)
+
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      const nitroliteClient = new NitroliteClient({
+        publicClient: publicClient as any,
+        walletClient: walletClient as any,
+        addresses: contracts,
+        chainId,
+        challengeDuration: BigInt(86400), // 24 hours
+        stateSigner: new WalletStateSigner(walletClient as any),
+      })
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+
+      // Deposit tokens into the custody contract
+      const txHash = await nitroliteClient.deposit(tokenAddress, amount)
+
+      // Refresh state
+      await Promise.all([fetchBalances(), fetchChannels()])
+
+      return { txHash, channelId: channelResponse.params?.channelId }
+    } catch (error) {
+      const technicalMessage = error instanceof Error ? error.message : 'Deposit failed'
+      console.error('Deposit error:', technicalMessage)
+      setState(prev => ({ ...prev, error: technicalMessage }))
+      throw error
+    }
+  }, [state.isAuthenticated, walletClient, publicClient, sendMessage, fetchBalances, fetchChannels])
+
   // Send payment
   const sendPayment = useCallback(async (
     recipientAddress: Address,
     amount: string,
-    asset: string = 'usdc'
+    asset: string = DEFAULT_ASSET
   ) => {
     if (!signerRef.current || !wsRef.current || !state.isAuthenticated) {
       throw new Error('Not connected or not authenticated')
@@ -322,14 +479,14 @@ export function useYellow() {
     }
   }, [state.isAuthenticated, sendMessage, fetchBalances])
 
-  // Get USDC balance - format to 2 decimal places
-  const getUSDCBalance = useCallback(() => {
-    const usdcBalance = state.balances.find(
-      b => b.asset.toLowerCase() === 'usdc'
+  // Get default asset balance - format to 2 decimal places
+  const getDefaultBalance = useCallback(() => {
+    const assetBalance = state.balances.find(
+      b => b.asset.toLowerCase() === DEFAULT_ASSET.toLowerCase()
     )
-    if (!usdcBalance?.amount) return '0.00'
+    if (!assetBalance?.amount) return '0.00'
 
-    const amount = parseFloat(usdcBalance.amount)
+    const amount = parseFloat(assetBalance.amount)
     return isNaN(amount) ? '0.00' : amount.toFixed(2)
   }, [state.balances])
 
@@ -372,11 +529,28 @@ export function useYellow() {
     }
   }, [fetchBalances])
 
+  // Heartbeat: prevent WebSocket idle timeout by periodically fetching balances
+  // Most WebSocket servers drop idle connections after 30-120s of inactivity.
+  // Sending a valid RPC call every 30s keeps the connection alive and data fresh.
+  useEffect(() => {
+    if (!state.isAuthenticated) return
+
+    const heartbeat = setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN && signerRef.current) {
+        fetchBalances()
+      }
+    }, 30_000)
+
+    return () => clearInterval(heartbeat)
+  }, [state.isAuthenticated, fetchBalances])
+
   return {
     // State
     isConnected: state.isConnected,
     isAuthenticated: state.isAuthenticated,
-    balance: getUSDCBalance(),
+    balance: getDefaultBalance(),
+    balances: state.balances,
+    channels: state.channels,
     error: state.error,
 
     // Loading states
@@ -386,7 +560,10 @@ export function useYellow() {
     // Actions
     connect,
     sendPayment,
+    depositToYellow,
+    withdrawFromChannel,
     fetchBalances,
+    fetchChannels,
     disconnect,
   }
 }
