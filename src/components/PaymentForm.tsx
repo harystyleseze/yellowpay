@@ -9,7 +9,10 @@ import { useYellow } from '@/hooks/useYellow'
 import { useENSProfile } from '@/hooks/useENS'
 import { useLiFiQuote, useLiFiChains, useLiFiTokens, useTransactionStatus } from '@/hooks/useLiFi'
 import { DEFAULT_ASSET, getAssetLabel, getSettlementToken } from '@/lib/constants'
+import { UnsupportedChainBanner } from './UnsupportedChainBanner'
+import { RequestPayment } from './RequestPayment'
 import { addTx, updateTx } from '@/lib/txHistory'
+import type { PaymentPrefill } from '@/app/page'
 import type { LiFiToken } from '@/lib/lifi'
 
 // Debounce hook
@@ -23,9 +26,15 @@ function useDebounce<T>(value: T, delayMs: number): T {
 }
 
 type PayMode = 'balance' | 'wallet'
+type FormMode = 'send' | 'request'
 type WalletPayStep = 'idle' | 'swap' | 'deposit' | 'transfer' | 'done'
 
-export function PaymentForm() {
+interface PaymentFormProps {
+  prefill?: PaymentPrefill | null
+  onPrefillConsumed?: () => void
+}
+
+export function PaymentForm({ prefill, onPrefillConsumed }: PaymentFormProps) {
   const { address: walletAddress, isConnected: walletConnected, chain: currentChain } = useAccount()
   const { data: walletClient } = useWalletClient()
   const senderProfile = useENSProfile(walletAddress)
@@ -57,8 +66,20 @@ export function PaymentForm() {
   const [selectedAsset, setSelectedAsset] = useState(DEFAULT_ASSET)
   const [txStatus, setTxStatus] = useState<'idle' | 'success' | 'error'>('idle')
 
+  // Send / Request mode toggle
+  const [formMode, setFormMode] = useState<FormMode>('send')
+
   // Payment mode toggle
   const [payMode, setPayMode] = useState<PayMode>('balance')
+
+  // Consume prefill from URL params
+  useEffect(() => {
+    if (!prefill) return
+    if (prefill.to) setRecipient(prefill.to)
+    if (prefill.amount) setAmount(prefill.amount)
+    if (prefill.asset) setSelectedAsset(prefill.asset)
+    onPrefillConsumed?.()
+  }, [prefill, onPrefillConsumed])
 
   // ─── Wallet mode state ───
   const { chains, isLoading: chainsLoading, supportedChainIds } = useLiFiChains()
@@ -510,6 +531,34 @@ export function PaymentForm() {
         </div>
       </div>
 
+      {/* Send / Request toggle */}
+      <div className="flex bg-gray-800 rounded-lg p-1 border border-gray-700">
+        <button
+          onClick={() => setFormMode('send')}
+          className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
+            formMode === 'send'
+              ? 'bg-gray-600 text-white'
+              : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          Send
+        </button>
+        <button
+          onClick={() => setFormMode('request')}
+          className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors ${
+            formMode === 'request'
+              ? 'bg-gray-600 text-white'
+              : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          Request
+        </button>
+      </div>
+
+      {formMode === 'request' ? (
+        <RequestPayment />
+      ) : (
+      <>
       {/* Payment mode toggle */}
       <div className="flex bg-gray-800 rounded-lg p-1 border border-gray-700">
         <button
@@ -654,14 +703,7 @@ export function PaymentForm() {
 
           {/* Unsupported chain warning */}
           {tokensError && (
-            <div className="p-3 bg-yellow-900/20 border border-yellow-700/50 rounded-lg">
-              <p className="text-sm text-yellow-400">{tokensError}</p>
-              {currentChain && !supportedChainIds.has(currentChain.id) && chains.length > 0 && (
-                <p className="text-xs text-yellow-500 mt-1">
-                  Your wallet is on {currentChain.name} (testnet). Select a supported chain above.
-                </p>
-              )}
-            </div>
+            <UnsupportedChainBanner message={tokensError} supportedChainIds={supportedChainIds} />
           )}
 
           {/* Source token selector */}
@@ -839,6 +881,8 @@ export function PaymentForm() {
           ? 'Powered by Yellow Network \u00b7 No gas fees \u00b7 Instant confirmation'
           : 'Powered by LI.FI + Yellow Network \u00b7 Pay with any token from any chain'}
       </p>
+      </>
+      )}
     </div>
   )
 }
