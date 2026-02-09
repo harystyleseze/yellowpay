@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
+import { usePublicClient } from 'wagmi'
 import { lifi } from '@/lib/lifi'
 import type {
   LiFiQuote,
@@ -152,6 +153,7 @@ export function useTransactionStatus(
   const [status, setStatus] = useState<LiFiStatus | null>(null)
   const [isPolling, setIsPolling] = useState(false)
   const intervalRef = useRef<ReturnType<typeof setInterval>>()
+  const publicClient = usePublicClient({ chainId: fromChain || undefined })
 
   useEffect(() => {
     if (!txHash) {
@@ -160,11 +162,38 @@ export function useTransactionStatus(
       return
     }
 
+    const isSameChain = fromChain === toChain && fromChain > 0
     const TERMINAL_STATES: LiFiStatusType[] = ['DONE', 'FAILED']
     setIsPolling(true)
 
     const poll = async () => {
       try {
+        // Same-chain swaps: check on-chain receipt directly instead of LI.FI status API.
+        // LI.FI's status endpoint is designed for cross-chain bridge tracking and returns
+        // NOT_FOUND/PENDING indefinitely for same-chain DEX swaps.
+        if (isSameChain && publicClient) {
+          try {
+            const receipt = await publicClient.getTransactionReceipt({
+              hash: txHash as `0x${string}`,
+            })
+            const result: LiFiStatus = {
+              status: receipt.status === 'success' ? 'DONE' : 'FAILED',
+              substatus: 'COMPLETED',
+              fromChain,
+              toChain,
+              txHash,
+            }
+            setStatus(result)
+            clearInterval(intervalRef.current)
+            setIsPolling(false)
+            return
+          } catch {
+            // Receipt not available yet (tx not mined) — retry on next interval
+            return
+          }
+        }
+
+        // Cross-chain: use LI.FI status API polling
         const result = await lifi.getStatus(txHash, fromChain, toChain, bridge)
         setStatus(result)
 
@@ -184,7 +213,7 @@ export function useTransactionStatus(
       clearInterval(intervalRef.current)
       setIsPolling(false)
     }
-  }, [txHash, fromChain, toChain, bridge])
+  }, [txHash, fromChain, toChain, bridge, publicClient])
 
   return { status, isPolling }
 }

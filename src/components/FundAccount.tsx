@@ -1,12 +1,13 @@
 'use client'
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { useAccount, useWalletClient, useBalance } from 'wagmi'
+import { useAccount, useWalletClient, usePublicClient, useBalance } from 'wagmi'
 import { parseUnits, formatUnits } from 'viem'
 import { useLiFiQuote, useLiFiChains, useLiFiTokens, useTransactionStatus } from '@/hooks/useLiFi'
 import { useYellow } from '@/hooks/useYellow'
-import { DEFAULT_ASSET_LABEL } from '@/lib/constants'
+import { DEFAULT_ASSET_LABEL, getSettlementToken, DEFAULT_ASSET } from '@/lib/constants'
 import { addTx, updateTx } from '@/lib/txHistory'
+import { ensureApproval } from '@/lib/erc20'
 import { UnsupportedChainBanner } from './UnsupportedChainBanner'
 import type { LiFiToken } from '@/lib/lifi'
 import type { Address } from 'viem'
@@ -24,7 +25,8 @@ function useDebounce<T>(value: T, delayMs: number): T {
 export function FundAccount() {
   const { address, isConnected: walletConnected, chain: currentChain } = useAccount()
   const { data: walletClient } = useWalletClient()
-  const { isConnected: yellowConnected, isAuthenticated, balance: yellowBalance, fetchBalances, depositToYellow } = useYellow()
+  const publicClient = usePublicClient()
+  const { isConnected: yellowConnected, isAuthenticated, balance: yellowBalance, custodyBalance, fetchBalances, depositToYellow, recoverCustodyFunds, connect, isConnecting, error: yellowError } = useYellow()
 
   // Chain & token selection
   const { chains, isLoading: chainsLoading, supportedChainIds } = useLiFiChains()
@@ -84,14 +86,28 @@ export function FundAccount() {
     ? parseFloat(formatUnits(walletBalance.data.value, walletBalance.data.decimals)).toFixed(4)
     : '0.00'
 
+  // Check if the selected token is already the settlement token (no swap needed)
+  const settlement = getSettlementToken(DEFAULT_ASSET)
+  const isDirectDeposit = !!(
+    selectedChainId &&
+    selectedToken &&
+    selectedChainId === settlement.chainId &&
+    selectedToken.address.toLowerCase() === settlement.tokenAddress.toLowerCase()
+  )
+
   // Debounced amount for quote fetching
   const debouncedAmount = useDebounce(amount, 500)
 
   // LI.FI quote
   const { quote, isLoading: quoteLoading, error: quoteError, fetchQuote, clearQuote } = useLiFiQuote()
 
-  // Fetch quote when inputs change
+  // Fetch quote when inputs change (skip for direct deposits — no swap needed)
   useEffect(() => {
+    if (isDirectDeposit) {
+      clearQuote()
+      return
+    }
+
     if (!selectedToken || !selectedChainId || !address || !debouncedAmount) {
       clearQuote()
       return
@@ -105,19 +121,15 @@ export function FundAccount() {
 
     const fromAmount = parseUnits(debouncedAmount, selectedToken.decimals).toString()
 
-    // Route to Base USDC for Yellow Network settlement
-    const toChain = 8453
-    const toToken = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' // USDC on Base
-
     fetchQuote({
       fromChain: selectedChainId,
-      toChain,
+      toChain: settlement.chainId,
       fromToken: selectedToken.address,
-      toToken,
+      toToken: settlement.tokenAddress,
       fromAmount,
       fromAddress: address,
     })
-  }, [selectedToken, selectedChainId, address, debouncedAmount, clearQuote, fetchQuote])
+  }, [selectedToken, selectedChainId, address, debouncedAmount, clearQuote, fetchQuote, isDirectDeposit, settlement])
 
   // Transaction execution state
   const [txHash, setTxHash] = useState<string | null>(null)
@@ -127,19 +139,86 @@ export function FundAccount() {
   const [fundStep, setFundStep] = useState<'idle' | 'swap' | 'deposit' | 'done'>('idle')
   const fundTxIdRef = useRef<string | null>(null)
 
-  // Track transaction status
+  // Recovery state for funds stuck in custody
+  const [isRecovering, setIsRecovering] = useState(false)
+  const [recoveryError, setRecoveryError] = useState<string | null>(null)
+  const [recoveryDone, setRecoveryDone] = useState(false)
+
+  const handleRecover = useCallback(async () => {
+    setIsRecovering(true)
+    setRecoveryError(null)
+    setRecoveryDone(false)
+    try {
+      await recoverCustodyFunds()
+      setRecoveryDone(true)
+    } catch (e) {
+      setRecoveryError(e instanceof Error ? e.message : 'Recovery failed')
+    } finally {
+      setIsRecovering(false)
+    }
+  }, [recoverCustodyFunds])
+
+  // Track transaction status (skip for direct deposits — no LI.FI swap to track)
   const { status: txStatus } = useTransactionStatus(
-    txHash,
+    txHash && txHash !== 'direct-deposit' ? txHash : null,
     quote?.action.fromChainId ?? 0,
     quote?.action.toChainId ?? 0,
     quote?.tool,
   )
 
-  // Handle fund execution — two-step process:
-  // Step 1: LI.FI swap/bridge to get the right token on the right chain
-  // Step 2: Deposit into Yellow Network custody contract
+  // Handle fund execution
+  // Direct deposit: already have the settlement token → deposit straight to custody
+  // Swap path: LI.FI swap/bridge → then deposit to custody
   const handleFund = useCallback(async () => {
-    if (!quote || !walletClient || !address) return
+    if (!address) return
+
+    // Direct deposit: skip LI.FI, deposit straight to Yellow Network
+    if (isDirectDeposit && selectedToken && selectedChainId) {
+      if (!amount || parseFloat(amount) <= 0) return
+
+      setIsExecuting(true)
+      setTxError(null)
+      setFundStep('deposit')
+
+      const chain = chains.find(c => c.id === selectedChainId)
+      const depositAmount = parseUnits(amount, selectedToken.decimals)
+      const tx = addTx({
+        type: 'fund',
+        status: 'pending',
+        asset: selectedToken.symbol.toLowerCase(),
+        amount,
+        sourceToken: selectedToken.symbol,
+        sourceAmount: amount,
+        sourceChain: chain?.name,
+      })
+      fundTxIdRef.current = tx.id
+      // Set a placeholder txHash so the progress UI renders
+      setTxHash('direct-deposit')
+
+      try {
+        await depositToYellow(
+          selectedToken.address as Address,
+          depositAmount,
+          selectedChainId,
+        )
+        setFundStep('done')
+        updateTx(tx.id, { status: 'completed' })
+        // Safety net: fetch fresh balances after a short delay
+        setTimeout(() => fetchBalances(), 3000)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Deposit to Yellow Network failed'
+        setTxError(msg)
+        updateTx(tx.id, { status: 'failed' })
+        setFundStep('idle')
+        setTxHash(null)
+      } finally {
+        setIsExecuting(false)
+      }
+      return
+    }
+
+    // Swap path: LI.FI swap/bridge first, then deposit
+    if (!quote || !walletClient || !publicClient || !selectedToken) return
 
     setIsExecuting(true)
     setTxError(null)
@@ -160,6 +239,14 @@ export function FundAccount() {
     fundTxIdRef.current = tx.id
 
     try {
+      // Step 0: ERC-20 approval (skipped for native tokens)
+      await ensureApproval(walletClient, publicClient, {
+        token: selectedToken.address as Address,
+        owner: address,
+        spender: quote.estimate.approvalAddress as Address,
+        amount: BigInt(quote.estimate.fromAmount),
+      })
+
       // Step 1: Execute LI.FI swap/bridge
       const hash = await walletClient.sendTransaction({
         to: quote.transactionRequest.to as `0x${string}`,
@@ -182,7 +269,7 @@ export function FundAccount() {
     } finally {
       setIsExecuting(false)
     }
-  }, [quote, walletClient, address, fetchBalances, chains, selectedChainId, selectedToken, amount])
+  }, [quote, walletClient, publicClient, address, fetchBalances, chains, selectedChainId, selectedToken, amount, isDirectDeposit, depositToYellow])
 
   // When LI.FI transfer completes → deposit into Yellow Network custody
   useEffect(() => {
@@ -203,6 +290,8 @@ export function FundAccount() {
         )
         setFundStep('done')
         if (fundTxIdRef.current) updateTx(fundTxIdRef.current, { status: 'completed' })
+        // Safety net: fetch fresh balances after a short delay
+        setTimeout(() => fetchBalances(), 3000)
       } catch (e) {
         const msg = e instanceof Error ? e.message : 'Deposit to Yellow Network failed'
         setTxError(msg)
@@ -245,39 +334,60 @@ export function FundAccount() {
 
         {/* Status indicator */}
         <div className="space-y-3">
-          <StatusStep
-            label="Transaction sent"
-            status="done"
-          />
-          <StatusStep
-            label="Source chain confirmation"
-            status={
-              !txStatus ? 'pending'
-              : txStatus.substatus === 'WAIT_SOURCE_CONFIRMATIONS' ? 'active'
-              : 'done'
-            }
-          />
-          <StatusStep
-            label={quote?.type === 'cross' ? 'Bridging to destination' : 'Swapping tokens'}
-            status={
-              !txStatus ? 'pending'
-              : txStatus.substatus === 'WAIT_DESTINATION_TRANSACTION' ? 'active'
-              : txStatus.status === 'DONE' || fundStep === 'deposit' || fundStep === 'done' ? 'done'
-              : 'pending'
-            }
-          />
-          <StatusStep
-            label="Depositing to Yellow Network"
-            status={
-              fundStep === 'done' ? 'done'
-              : fundStep === 'deposit' ? 'active'
-              : 'pending'
-            }
-          />
-          <StatusStep
-            label="Funds available"
-            status={fundStep === 'done' ? 'done' : 'pending'}
-          />
+          {isDirectDeposit ? (
+            // Direct deposit: only deposit + done steps
+            <>
+              <StatusStep
+                label="Depositing to Yellow Network"
+                status={
+                  fundStep === 'done' ? 'done'
+                  : fundStep === 'deposit' ? 'active'
+                  : 'pending'
+                }
+              />
+              <StatusStep
+                label="Funds available"
+                status={fundStep === 'done' ? 'done' : 'pending'}
+              />
+            </>
+          ) : (
+            // Swap path: full multi-step flow
+            <>
+              <StatusStep
+                label="Transaction sent"
+                status="done"
+              />
+              <StatusStep
+                label="Source chain confirmation"
+                status={
+                  !txStatus ? 'pending'
+                  : txStatus.substatus === 'WAIT_SOURCE_CONFIRMATIONS' ? 'active'
+                  : 'done'
+                }
+              />
+              <StatusStep
+                label={quote?.type === 'cross' ? 'Bridging to destination' : 'Swapping tokens'}
+                status={
+                  !txStatus ? 'pending'
+                  : txStatus.substatus === 'WAIT_DESTINATION_TRANSACTION' ? 'active'
+                  : txStatus.status === 'DONE' || fundStep === 'deposit' || fundStep === 'done' ? 'done'
+                  : 'pending'
+                }
+              />
+              <StatusStep
+                label="Depositing to Yellow Network"
+                status={
+                  fundStep === 'done' ? 'done'
+                  : fundStep === 'deposit' ? 'active'
+                  : 'pending'
+                }
+              />
+              <StatusStep
+                label="Funds available"
+                status={fundStep === 'done' ? 'done' : 'pending'}
+              />
+            </>
+          )}
         </div>
 
         {txStatus?.status === 'FAILED' && (
@@ -311,9 +421,11 @@ export function FundAccount() {
           </button>
         )}
 
-        <p className="text-xs text-gray-500 text-center">
-          {`TX: ${txHash.slice(0, 10)}...${txHash.slice(-8)}`}
-        </p>
+        {txHash && txHash !== 'direct-deposit' && (
+          <p className="text-xs text-gray-500 text-center">
+            {`TX: ${txHash.slice(0, 10)}...${txHash.slice(-8)}`}
+          </p>
+        )}
       </div>
     )
   }
@@ -330,6 +442,44 @@ export function FundAccount() {
           <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-900/30 text-green-400 border border-green-800/50">
             Connected
           </span>
+        </div>
+      )}
+
+      {/* Recovery banner — shown when funds are stuck in custody */}
+      {yellowConnected && isAuthenticated && parseFloat(custodyBalance) > 0 && !recoveryDone && (
+        <div className="p-3 bg-yellow-900/20 border border-yellow-700/50 rounded-lg space-y-2">
+          <p className="text-sm text-yellow-300">
+            <strong>{custodyBalance} {DEFAULT_ASSET_LABEL}</strong> found in custody contract from a previous incomplete deposit.
+          </p>
+          <p className="text-xs text-yellow-400/70">
+            These funds were deposited on-chain but never moved to your Yellow Network ledger. Click below to complete the process.
+          </p>
+          {recoveryError && (
+            <p className="text-xs text-red-400">{recoveryError}</p>
+          )}
+          <button
+            onClick={handleRecover}
+            disabled={isRecovering}
+            className="w-full py-2 bg-yellow-600 hover:bg-yellow-500 disabled:bg-yellow-800
+                       disabled:cursor-wait text-black font-medium rounded-lg transition-colors
+                       text-sm flex items-center justify-center gap-2"
+          >
+            {isRecovering ? (
+              <>
+                <div className="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                Recovering funds...
+              </>
+            ) : (
+              `Recover ${custodyBalance} ${DEFAULT_ASSET_LABEL}`
+            )}
+          </button>
+        </div>
+      )}
+      {recoveryDone && (
+        <div className="p-3 bg-green-900/20 border border-green-700/50 rounded-lg">
+          <p className="text-sm text-green-400">
+            Funds recovered successfully! Your balance has been updated.
+          </p>
         </div>
       )}
 
@@ -430,8 +580,24 @@ export function FundAccount() {
         )}
       </div>
 
-      {/* Quote preview */}
-      {quoteLoading && amount && (
+      {/* Quote / deposit preview */}
+      {isDirectDeposit && amount && parseFloat(amount) > 0 && (
+        <div className="p-4 bg-gray-800/50 rounded-lg border border-gray-700/50 space-y-3">
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-gray-400">You deposit</span>
+            <span className="text-lg font-semibold text-white">
+              {amount}{' '}
+              <span className="text-sm text-gray-400">{selectedToken?.symbol}</span>
+            </span>
+          </div>
+          <div className="space-y-1.5 pt-2 border-t border-gray-700/50">
+            <QuoteDetail label="Route" value="Direct deposit (no swap)" />
+            <QuoteDetail label="Fee" value="Gas only" />
+          </div>
+        </div>
+      )}
+
+      {!isDirectDeposit && quoteLoading && amount && (
         <div className="p-4 bg-gray-800/50 rounded-lg border border-gray-700/50">
           <div className="flex items-center gap-2 text-gray-400">
             <div className="w-4 h-4 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
@@ -440,7 +606,7 @@ export function FundAccount() {
         </div>
       )}
 
-      {quote && !quoteLoading && (
+      {!isDirectDeposit && quote && !quoteLoading && (
         <div className="p-4 bg-gray-800/50 rounded-lg border border-gray-700/50 space-y-3">
           <div className="flex justify-between items-center">
             <span className="text-sm text-gray-400">You receive</span>
@@ -498,28 +664,62 @@ export function FundAccount() {
         </div>
       )}
 
-      {/* Fund button */}
-      <button
-        onClick={handleFund}
-        disabled={!quote || isExecuting || quoteLoading || (!!amount && parseFloat(amount) > parseFloat(formattedWalletBalance))}
-        className="w-full py-3 bg-yellow-500 hover:bg-yellow-400 disabled:bg-gray-700
-                   disabled:cursor-not-allowed text-black disabled:text-gray-400
-                   font-medium rounded-lg transition-colors
-                   flex items-center justify-center gap-2"
-      >
-        {isExecuting ? (
-          <>
-            <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
-            Confirming...
-          </>
-        ) : quote ? (
-          `Fund ${formatUnits(BigInt(quote.estimate.toAmount), quote.action.toToken.decimals)} ${quote.action.toToken.symbol}`
-        ) : amount ? (
-          'Enter amount for quote'
-        ) : (
-          'Enter amount'
-        )}
-      </button>
+      {/* Connect to Yellow Network prompt (required before funding) */}
+      {!isAuthenticated && (
+        <div className="space-y-3">
+          <button
+            onClick={connect}
+            disabled={isConnecting}
+            className="w-full py-3 bg-yellow-500 hover:bg-yellow-400 disabled:bg-yellow-600
+                       disabled:cursor-wait text-black font-medium rounded-lg transition-colors
+                       flex items-center justify-center gap-2"
+          >
+            {isConnecting ? (
+              <>
+                <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                {yellowConnected ? 'Authenticating...' : 'Connecting...'}
+              </>
+            ) : (
+              'Connect to Yellow Network'
+            )}
+          </button>
+          {yellowError && (
+            <p className="text-sm text-red-400 text-center">{yellowError}</p>
+          )}
+        </div>
+      )}
+
+      {/* Fund button (only shown when authenticated) */}
+      {isAuthenticated && (
+        <button
+          onClick={handleFund}
+          disabled={
+            isExecuting || quoteLoading
+            || (!isDirectDeposit && !quote)
+            || (isDirectDeposit && (!amount || parseFloat(amount) <= 0))
+            || (!!amount && parseFloat(amount) > parseFloat(formattedWalletBalance))
+          }
+          className="w-full py-3 bg-yellow-500 hover:bg-yellow-400 disabled:bg-gray-700
+                     disabled:cursor-not-allowed text-black disabled:text-gray-400
+                     font-medium rounded-lg transition-colors
+                     flex items-center justify-center gap-2"
+        >
+          {isExecuting ? (
+            <>
+              <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
+              Confirming...
+            </>
+          ) : isDirectDeposit && amount && parseFloat(amount) > 0 ? (
+            `Deposit ${amount} ${selectedToken?.symbol}`
+          ) : quote ? (
+            `Fund ${formatUnits(BigInt(quote.estimate.toAmount), quote.action.toToken.decimals)} ${quote.action.toToken.symbol}`
+          ) : amount ? (
+            'Enter amount for quote'
+          ) : (
+            'Enter amount'
+          )}
+        </button>
+      )}
 
       {/* Info */}
       <p className="text-xs text-gray-500 text-center">

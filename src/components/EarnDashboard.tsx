@@ -1,14 +1,15 @@
 'use client'
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { useAccount, useWalletClient, useBalance } from 'wagmi'
-import { parseUnits, formatUnits } from 'viem'
+import { useAccount, useWalletClient, usePublicClient, useBalance } from 'wagmi'
+import { parseUnits, formatUnits, type Address } from 'viem'
 import { useEarnVaults, useEarnPositions, addEarnDeposit, removeEarnDeposit } from '@/hooks/useEarn'
 import { useLiFiQuote, useLiFiChains, useLiFiTokens, useTransactionStatus } from '@/hooks/useLiFi'
 import { getAssetLabel, DEFAULT_ASSET_LABEL } from '@/lib/constants'
 import { addTx, updateTx } from '@/lib/txHistory'
 import type { EarnVault, EarnPosition } from '@/lib/earn'
 import { UnsupportedChainBanner } from './UnsupportedChainBanner'
+import { ensureApproval } from '@/lib/erc20'
 import type { LiFiToken } from '@/lib/lifi'
 
 // Debounce hook (same as FundAccount)
@@ -22,7 +23,7 @@ function useDebounce<T>(value: T, delayMs: number): T {
 }
 
 type View = 'overview' | 'deposit' | 'withdraw'
-type DepositStep = 'idle' | 'confirming' | 'depositing' | 'done'
+type DepositStep = 'idle' | 'approving' | 'confirming' | 'depositing' | 'done'
 type WithdrawStep = 'idle' | 'confirming' | 'withdrawing' | 'done'
 
 const RISK_COLORS: Record<string, string> = {
@@ -34,6 +35,7 @@ const RISK_COLORS: Record<string, string> = {
 export function EarnDashboard() {
   const { address, isConnected: walletConnected, chain: currentChain } = useAccount()
   const { data: walletClient } = useWalletClient()
+  const publicClient = usePublicClient()
 
   const { vaults, isLoading: vaultsLoading, error: vaultsError } = useEarnVaults()
   const { positions, isLoading: positionsLoading, error: positionsError, refresh: refreshPositions } = useEarnPositions()
@@ -256,11 +258,11 @@ export function EarnDashboard() {
 
   // ─── Deposit handler (LI.FI) ───
   const handleDeposit = useCallback(async () => {
-    if (!quote || !walletClient || !address || !selectedVault) return
+    if (!quote || !walletClient || !publicClient || !address || !selectedVault || !selectedToken) return
 
     setIsExecuting(true)
     setTxError(null)
-    setDepositStep('confirming')
+    setDepositStep('approving')
 
     const toAmount = formatUnits(BigInt(quote.estimate.toAmount), quote.action.toToken.decimals)
     const tx = addTx({
@@ -277,7 +279,14 @@ export function EarnDashboard() {
     fundTxIdRef.current = tx.id
 
     try {
-      await new Promise(r => setTimeout(r, 300))
+      // ERC-20 approval (skipped for native tokens)
+      await ensureApproval(walletClient, publicClient, {
+        token: selectedToken.address as Address,
+        owner: address,
+        spender: quote.estimate.approvalAddress as Address,
+        amount: BigInt(quote.estimate.fromAmount),
+      })
+
       setDepositStep('depositing')
 
       const hash = await walletClient.sendTransaction({
@@ -301,11 +310,11 @@ export function EarnDashboard() {
     } finally {
       setIsExecuting(false)
     }
-  }, [quote, walletClient, address, selectedVault, selectedToken, amount, chains, selectedChainId])
+  }, [quote, walletClient, publicClient, address, selectedVault, selectedToken, amount, chains, selectedChainId])
 
   // ─── Withdraw handler (LI.FI) ───
   const handleWithdraw = useCallback(async () => {
-    if (!withdrawQuote || !walletClient || !address || !selectedPosition) return
+    if (!withdrawQuote || !walletClient || !publicClient || !address || !selectedPosition) return
 
     setIsExecuting(true)
     setTxError(null)
@@ -322,7 +331,17 @@ export function EarnDashboard() {
     fundTxIdRef.current = tx.id
 
     try {
-      await new Promise(r => setTimeout(r, 300))
+      // ERC-20 approval — LI.FI Diamond needs permission to spend aTokens
+      const vault = selectedPosition.vault
+      if (vault.aTokenAddress && withdrawQuote.estimate.approvalAddress) {
+        await ensureApproval(walletClient, publicClient, {
+          token: vault.aTokenAddress as Address,
+          owner: address,
+          spender: withdrawQuote.estimate.approvalAddress as Address,
+          amount: BigInt(withdrawQuote.estimate.fromAmount),
+        })
+      }
+
       setWithdrawStep('withdrawing')
 
       const hash = await walletClient.sendTransaction({
@@ -346,7 +365,7 @@ export function EarnDashboard() {
     } finally {
       setIsExecuting(false)
     }
-  }, [withdrawQuote, walletClient, address, selectedPosition])
+  }, [withdrawQuote, walletClient, publicClient, address, selectedPosition])
 
   // Auth guard: wallet not connected
   if (!walletConnected) {
@@ -513,8 +532,9 @@ export function EarnDashboard() {
           </>
         ) : depositStep !== 'idle' ? (
           <div className="space-y-3">
-            <StatusStep label="Deposit confirmed" status={depositStep === 'confirming' ? 'active' : 'done'} />
-            <StatusStep label="Depositing to vault" status={depositStep === 'depositing' ? 'active' : 'pending'} />
+            <StatusStep label="Approving token" status={depositStep === 'approving' ? 'active' : 'done'} />
+            <StatusStep label="Deposit confirmed" status={depositStep === 'confirming' ? 'active' : depositStep === 'approving' ? 'pending' : 'done'} />
+            <StatusStep label="Depositing to vault" status={depositStep === 'depositing' ? 'active' : depositStep === 'approving' || depositStep === 'confirming' ? 'pending' : 'pending'} />
             <StatusStep label="Position active" status="pending" />
             {txError && (
               <div className="p-3 bg-red-900/20 border border-red-700 rounded-lg">
