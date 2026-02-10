@@ -570,11 +570,13 @@ export function YellowProvider({ children }: { children: ReactNode }) {
       const recoverConfigParams = parsedConfig.params as any
       const brokerAddress = (recoverConfigParams.brokerAddress || recoverConfigParams.broker_address) as `0x${string}`
 
-      // Move custody funds to unified ledger via two-step resize:
-      // Step 1: custody → channel (resize_amount)
-      // Step 2: channel → ledger (allocate_amount)
-      // If resize fails, fall back to direct withdrawal (returns funds to wallet)
-      console.log('[Yellow] Recovery: Moving funds to ledger (two-step resize)...')
+      // Move custody funds to channel via resize, then wait for server to auto-allocate to ledger.
+      // If resize fails, fall back to direct withdrawal (returns funds to wallet).
+      const priorRecoveryBalances = await fetchBalances()
+      const priorRecoveryAmount = parseFloat(
+        priorRecoveryBalances.find(b => b.asset.toLowerCase() === DEFAULT_ASSET.toLowerCase())?.amount || '0'
+      )
+      console.log('[Yellow] Recovery: Moving funds to channel via resize...')
       try {
         // Step 1: custody → channel
         console.log('[Yellow] Recovery resize step 1: custody → channel...')
@@ -609,56 +611,23 @@ export function YellowProvider({ children }: { children: ReactNode }) {
           resizeState,
           proofStates: [channelData.lastValidState as State],
         })
-        console.log('[Yellow] Recovery resize step 1 done (custody → channel)')
+        console.log('[Yellow] Recovery resize done (custody → channel)')
 
-        // Step 2: channel → ledger (retry with delay for server to detect on-chain resize)
-        console.log('[Yellow] Recovery resize step 2: channel → ledger...')
-        let allocateResponse: string = ''
-        for (let attempt = 0; attempt < 6; attempt++) {
-          if (attempt > 0) {
-            const delay = attempt * 3000
-            console.log(`[Yellow] Recovery allocate: waiting ${delay / 1000}s (attempt ${attempt + 1}/6)...`)
-            await new Promise(r => setTimeout(r, delay))
+        // Wait for server to auto-allocate funds to the unified ledger
+        console.log('[Yellow] Recovery: Waiting for balance to update...')
+        for (let i = 0; i < 10; i++) {
+          await new Promise(r => setTimeout(r, 3000))
+          const balances = await fetchBalances()
+          const usdcBalance = balances.find(b => b.asset.toLowerCase() === DEFAULT_ASSET.toLowerCase())
+          const currentAmount = parseFloat(usdcBalance?.amount || '0')
+          console.log(`[Yellow] Recovery balance check ${i + 1}/10: ${currentAmount} (was ${priorRecoveryAmount})`)
+          if (currentAmount > priorRecoveryAmount + 0.001) {
+            console.log('[Yellow] Recovery: Balance updated!')
+            break
           }
-          const allocateMsg = await createResizeChannelMessage(signerRef.current!, {
-            channel_id: channelId as `0x${string}`,
-            resize_amount: BigInt(0),
-            allocate_amount: custodyAmount,
-            funds_destination: brokerAddress,
-          })
-          allocateResponse = await sendMessage(allocateMsg)
-          console.log('[Yellow] Recovery allocate response:', allocateResponse)
-
-          const allocateParsedAny = parseAnyRPCResponse(allocateResponse)
-          if (allocateParsedAny.method === 'error') {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const allocErrParams = allocateParsedAny.params as any
-            const allocServerError = String(allocErrParams?.error || '')
-            if (allocServerError.includes('resize already ongoing') && attempt < 5) {
-              continue
-            }
-            throw new Error(`Server rejected allocate: ${allocServerError || JSON.stringify(allocErrParams)}`)
-          }
-          break
         }
 
-        const parsedAllocate = parseResizeChannelResponse(allocateResponse)
-        const allocateData = parsedAllocate.params
-        const channelData2 = await nitroliteClient.getChannelData(channelId as `0x${string}`)
-        const allocateState: FinalState = {
-          channelId: (allocateData.channelId || channelId) as `0x${string}`,
-          intent: allocateData.state.intent as StateIntent,
-          version: BigInt(allocateData.state.version),
-          data: allocateData.state.stateData as `0x${string}`,
-          allocations: allocateData.state.allocations as Allocation[],
-          serverSignature: allocateData.serverSignature as `0x${string}`,
-        }
-        await nitroliteClient.resizeChannel({
-          resizeState: allocateState,
-          proofStates: [channelData2.lastValidState as State],
-        })
-
-        console.log('[Yellow] Recovery complete! Funds moved to ledger.')
+        console.log('[Yellow] Recovery complete!')
       } catch (resizeError) {
         // Resize failed — fall back to direct withdrawal (returns funds to wallet)
         console.warn('[Yellow] Recovery resize failed:', resizeError)
@@ -797,6 +766,12 @@ export function YellowProvider({ children }: { children: ReactNode }) {
         stateSigner: new WalletStateSigner(depositWalletClient as any),
       })
       /* eslint-enable @typescript-eslint/no-explicit-any */
+
+      // Capture current balance for change detection after deposit
+      const currentBalances = await fetchBalances()
+      const priorAmount = parseFloat(
+        currentBalances.find(b => b.asset.toLowerCase() === DEFAULT_ASSET.toLowerCase())?.amount || '0'
+      )
 
       // ── Step 1: Ensure a channel exists (reuse existing or create new) ──
       let channelId: string | undefined
@@ -966,63 +941,21 @@ export function YellowProvider({ children }: { children: ReactNode }) {
       })
       console.log('[Yellow] Resize tx:', resizeTxHash)
 
-      // ── Step 5: Allocate — move funds from channel into the unified ledger ──
-      // The server needs time to detect the on-chain resize before accepting allocate.
-      // Retry with increasing delay until the server is ready.
-      console.log('[Yellow] Step 5: Allocating (channel → ledger)...')
-      let allocateResponse: string = ''
-      for (let attempt = 0; attempt < 6; attempt++) {
-        if (attempt > 0) {
-          const delay = attempt * 3000 // 3s, 6s, 9s, 12s, 15s
-          console.log(`[Yellow] Allocate: waiting ${delay / 1000}s for server to process resize (attempt ${attempt + 1}/6)...`)
-          await new Promise(r => setTimeout(r, delay))
+      // ── Step 5: Wait for balance to update ──
+      // The server auto-allocates funds to the unified ledger after detecting the on-chain resize.
+      // No separate allocate RPC call is needed — just poll until the balance reflects the deposit.
+      console.log('[Yellow] Deposit on-chain complete. Waiting for balance to update...')
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 3000))
+        const balances = await fetchBalances()
+        const usdcBalance = balances.find(b => b.asset.toLowerCase() === DEFAULT_ASSET.toLowerCase())
+        const currentAmount = parseFloat(usdcBalance?.amount || '0')
+        console.log(`[Yellow] Balance check ${i + 1}/10: ${currentAmount} (was ${priorAmount})`)
+        if (currentAmount > priorAmount + 0.001) {
+          console.log('[Yellow] Balance updated!')
+          break
         }
-        const allocateMsg = await createResizeChannelMessage(signerRef.current!, {
-          channel_id: channelId as `0x${string}`,
-          resize_amount: BigInt(0),
-          allocate_amount: amount,
-          funds_destination: brokerAddress,
-        })
-        allocateResponse = await sendMessage(allocateMsg)
-        console.log('[Yellow] Allocate response:', allocateResponse)
-
-        const allocateParsedAny = parseAnyRPCResponse(allocateResponse)
-        if (allocateParsedAny.method === 'error') {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const allocErrParams = allocateParsedAny.params as any
-          const allocServerError = String(allocErrParams?.error || '')
-          // "resize already ongoing" means server hasn't processed the on-chain tx yet — retry
-          if (allocServerError.includes('resize already ongoing') && attempt < 5) {
-            continue
-          }
-          throw new Error(`Allocate (channel→ledger) failed: ${allocServerError || JSON.stringify(allocErrParams)}`)
-        }
-        break // Success
       }
-
-      const parsedAllocate = parseResizeChannelResponse(allocateResponse)
-      const allocateData = parsedAllocate.params
-      console.log('[Yellow] Allocate approved, executing on-chain...')
-
-      const channelData2 = await nitroliteClient.getChannelData(channelId as `0x${string}`)
-      const allocateState: FinalState = {
-        channelId: (allocateData.channelId || channelId) as `0x${string}`,
-        intent: allocateData.state.intent as StateIntent,
-        version: BigInt(allocateData.state.version),
-        data: allocateData.state.stateData as `0x${string}`,
-        allocations: allocateData.state.allocations as Allocation[],
-        serverSignature: allocateData.serverSignature as `0x${string}`,
-      }
-
-      const { txHash: allocateTxHash } = await nitroliteClient.resizeChannel({
-        resizeState: allocateState,
-        proofStates: [channelData2.lastValidState as State],
-      })
-      console.log('[Yellow] Allocate tx:', allocateTxHash)
-
-      // ── Done! Fetch balances — should be non-zero now ──
-      console.log('[Yellow] Deposit complete! Fetching balances...')
-      await fetchBalances()
       await fetchChannels()
 
       return { txHash: depositTxHash, channelId: channelId as string }
