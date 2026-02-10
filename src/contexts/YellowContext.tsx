@@ -673,10 +673,39 @@ export function YellowProvider({ children }: { children: ReactNode }) {
     if (!signerRef.current || !wsRef.current || !state.isAuthenticated) {
       throw new Error('Not connected or not authenticated')
     }
+    if (!walletClient || !publicClient) {
+      throw new Error('Wallet not connected')
+    }
 
     setState(prev => ({ ...prev, error: null }))
 
     try {
+      const settlement = getSettlementToken(DEFAULT_ASSET)
+      const contracts = getContractsForChain(settlement.chainId)
+
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      let withdrawPublicClient: any = publicClient
+      let withdrawWalletClient: any = walletClient
+
+      if (publicClient.chain?.id !== settlement.chainId) {
+        try {
+          withdrawPublicClient = getPublicClient(wagmiConfig, { chainId: settlement.chainId })
+          withdrawWalletClient = await getWalletClient(wagmiConfig, { chainId: settlement.chainId })
+        } catch {
+          throw new Error(`Please switch your wallet to chain ${settlement.chainId}.`)
+        }
+      }
+
+      const nitroliteClient = new NitroliteClient({
+        publicClient: withdrawPublicClient as any,
+        walletClient: withdrawWalletClient as any,
+        addresses: contracts,
+        chainId: settlement.chainId,
+        challengeDuration: BigInt(3600),
+        stateSigner: new WalletStateSigner(withdrawWalletClient as any),
+      })
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+
       let response: string
 
       if (amount !== undefined) {
@@ -695,31 +724,52 @@ export function YellowProvider({ children }: { children: ReactNode }) {
         }
         parseResizeChannelResponse(response)
       } else {
-        // Full withdraw via close
+        // Full withdraw via close — sends RPC then executes on-chain
+        console.log('[Yellow] Closing channel:', channelId)
         const closeMsg = await createCloseChannelMessage(
           signerRef.current,
           channelId,
           fundsDestination,
         )
         response = await sendMessage(closeMsg)
+        console.log('[Yellow] Close channel response:', response)
 
         const parsed = parseAnyRPCResponse(response)
         if (parsed.method === 'error') {
           const errorParams = parsed.params as { error?: string }
           throw new Error(errorParams.error || 'Channel close failed')
         }
-        parseCloseChannelResponse(response)
+
+        const closeResponse = parseCloseChannelResponse(response)
+        const closeData = closeResponse.params
+
+        // Execute the on-chain close transaction
+        console.log('[Yellow] Executing on-chain channel close...')
+        const finalState: FinalState = {
+          channelId: (closeData.channelId || channelId) as `0x${string}`,
+          intent: closeData.state.intent as StateIntent,
+          version: BigInt(closeData.state.version),
+          data: closeData.state.stateData as `0x${string}`,
+          allocations: closeData.state.allocations as Allocation[],
+          serverSignature: closeData.serverSignature as `0x${string}`,
+        }
+
+        const closeTxHash = await nitroliteClient.closeChannel({
+          stateData: (closeData.state.stateData || '0x') as `0x${string}`,
+          finalState,
+        })
+        console.log('[Yellow] Channel closed on-chain, tx:', closeTxHash)
       }
 
       // Refresh balances and channels
       await Promise.all([fetchBalances(), fetchChannels()])
     } catch (error) {
       const technicalMessage = error instanceof Error ? error.message : 'Withdrawal failed'
-      console.error('Withdrawal error:', technicalMessage)
+      console.error('[Yellow] Withdrawal error:', technicalMessage)
       setState(prev => ({ ...prev, error: technicalMessage }))
       throw error
     }
-  }, [state.isAuthenticated, sendMessage, fetchBalances, fetchChannels])
+  }, [state.isAuthenticated, walletClient, publicClient, wagmiConfig, sendMessage, fetchBalances, fetchChannels])
 
   // Deposit on-chain tokens into Yellow Network
   // Flow: ensure channel exists → deposit to custody → get config → resize (two steps) to unified ledger
